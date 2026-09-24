@@ -13,7 +13,7 @@ MATLAB pipeline for processing PrairieView two-photon calcium imaging data. Supp
 ## Requirements
 
 - MATLAB (the script header specifies R2024a), Image Processing Toolbox, and Parallel Computing Toolbox.
-- [NoRMCorre] (https://github.com/flatironinstitute/CaImAn-MATLAB), [BrewerMap](https://github.com/DrosteEffect/BrewerMap), [CalciSeg](https://github.com/YannickGuenzel/CalciSeg), and [export_fig](https://github.com/altmany/export_fig), including their dependencies.
+- [NoRMCorre](https://github.com/flatironinstitute/CaImAn-MATLAB), [BrewerMap](https://github.com/DrosteEffect/BrewerMap), [CalciSeg](https://github.com/YannickGuenzel/CalciSeg), and [export_fig](https://github.com/altmany/export_fig), including their dependencies.
 - A graphics-capable MATLAB session with MPEG-4 export support.
 
 Place the external packages under the folder specified by `SET.GithubPath`, using the subfolder names `NoRMCorre`, `BrewerMap`, `CalciSeg`, and `export_fig`, or adjust the script's `addpath` calls.

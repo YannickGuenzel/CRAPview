@@ -271,7 +271,7 @@ for iAni = 1:size(curr.dir.all, 1)
                 if SET.max_compression
                     for iTrial = 1:SET.N
                         trialName = SET.trial_names_clean{iTrial};
-                        STACK.(trialName) = max(STACK.(trialName)(:,:,SET.max_compression_planes), [], 3);
+                        STACK.(trialName) = max(STACK.(trialName)(:,:,SET.max_compression_planes,:), [], 3);
                         % Keep original plane times; a projected volume has no
                         % single exact acquisition time. Use their mean as its reference.
                         SET.(trialName).relativeTime_planes = SET.(trialName).relativeTime;

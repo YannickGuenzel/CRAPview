@@ -77,6 +77,7 @@ SET.SmoothData_temp = 3;
 % Set whether the individual planes of a volume should be compressed to a
 % single plane using a maximum projection
 SET.max_compression = false;
+SET.max_compression_planes = 5:10;
 
 % Set which segmentation approach to take. Choose CalciSeg for most
 % imaging data and an unbiased approach. For now, it will operate on each
@@ -264,11 +265,13 @@ for iAni = 1:size(curr.dir.all, 1)
                 % ---------------------------------------------------------
                 STACK = filterImages(STACK, SET);
 
+
                 % Compress planes using a maximum intensity compression
+                % ---------------------------------------------------------
                 if SET.max_compression
                     for iTrial = 1:SET.N
                         trialName = SET.trial_names_clean{iTrial};
-                        STACK.(trialName) = max(STACK.(trialName), [], 3);
+                        STACK.(trialName) = max(STACK.(trialName)(:,:,SET.max_compression_planes), [], 3);
                         % Keep original plane times; a projected volume has no
                         % single exact acquisition time. Use their mean as its reference.
                         SET.(trialName).relativeTime_planes = SET.(trialName).relativeTime;

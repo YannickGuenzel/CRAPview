@@ -30,7 +30,7 @@
 % - https://github.com/YannickGuenzel/CalciSeg
 % - https://github.com/altmany/export_fig
 %
-% Version: 24-Sep-2026 | (R2024a)
+% Version: 07-Oct-2026 | (R2024a)
 
 clear all; close all; clc
 delete(gcp('nocreate'))
@@ -42,7 +42,7 @@ parpool("Threads");
 SET.Channel = 'Ch2';
 
 % Path to GitHub folder
-SET.GithubPath = '...';
+SET.GithubPath = '...\GitHub\';
 
 % Volumetric data with a piezo can result in the first plane being off.
 % This setting allows you to remove it.
@@ -91,8 +91,8 @@ SET.segmentation_method = 'CalciSeg';                                      % 'Ca
 % a quantile over the whole recording. For the window, set the beginning
 % and the end frame, i.e., SET.dFF_value=[start stop]. For the quantile,
 % just the quantile, e.g., SET.dFF_value=0.05.
-SET.dFF_type = 'quantile';                                                   % 'window' or 'quantile'
-SET.dFF_value = 0.05;
+SET.dFF_type = 'window';                                                   % 'window' or 'quantile'
+SET.dFF_value = [5 15];
 
 % Set whether to re-run already procesed data
 SET.overwrite = true;
@@ -105,8 +105,8 @@ if strcmp(SET.segmentation_method, 'CalciSeg')
     % details.
     SET.segmentation_settings.quiet = false;
     SET.segmentation_settings.projection_method = 'std';
-    SET.segmentation_settings.init_seg_method = 'voronoi';
-    SET.segmentation_settings.n_rep = 1;
+    SET.segmentation_settings.init_seg_method = 'rICA';
+    SET.segmentation_settings.n_rep = 100;
     SET.segmentation_settings.refinement_method = 'corr';
     SET.segmentation_settings.detrend = 'linear';
     SET.segmentation_settings.limitPixCount = [25 inf];
@@ -540,37 +540,87 @@ end
 end%FCN:correctMotion
 
 function stack = correctStack(stack, SET, reference)
+
 numberOfRows = size(stack,1);
 numberOfColumns = size(stack,2);
 numberOfPlanes = size(stack,3);
 numberOfFrames = size(stack,4);
+
 use2D = strcmp(SET.NoRMCorre_dim, '2D');
-registrationDepth = numberOfPlanes;
+
 if use2D
     registrationDepth = 1;
+
+    gridSize    = [32, 32];
+    overlap_pre = [16, 16];
+    mot_uf      = [4, 4];
+    max_shift   = [24, 24];
+    max_dev     = [3, 3];
+
+else
+    registrationDepth = numberOfPlanes;
+
+    gridSize    = [32, 32, 4];
+    overlap_pre = [16, 16, 2];
+    mot_uf      = [4, 4, 1];
+    max_shift   = [24, 24, 2];
+    max_dev     = [3, 3, 1];
 end
 
+% Non-rigid NoRMCorre parameters
 options = NoRMCorreSetParms( ...
-    'd1', numberOfRows, 'd2', numberOfColumns, 'd3', registrationDepth, ...
-    'iter', SET.NoRMCorre_iter, 'print_msg', false, ...
-    'use_parallel', true, 'upd_template', isempty(reference));
+    'd1', numberOfRows, ...
+    'd2', numberOfColumns, ...
+    'd3', registrationDepth, ...
+    'iter', SET.NoRMCorre_iter, ...
+    'print_msg', false, ...
+    'use_parallel', true, ...
+    'upd_template', isempty(reference), ...
+    'grid_size', gridSize, ...
+    'overlap_pre', overlap_pre, ...
+    'mot_uf', mot_uf, ...
+    'max_shift', max_shift, ...
+    'max_dev', max_dev);
 
 if use2D
+    % Register each Z-plane independently in XY
     for planeIndex = 1:numberOfPlanes
-        planeMovie = reshape(stack(:,:,planeIndex,:), ...
-            numberOfRows, numberOfColumns, numberOfFrames);
+
+        planeMovie = reshape( ...
+            stack(:,:,planeIndex,:), ...
+            numberOfRows, ...
+            numberOfColumns, ...
+            numberOfFrames);
+
         planeReference = [];
+
         if ~isempty(reference)
             planeReference = reference(:,:,planeIndex);
         end
-        planeMovie = normcorre_batch(planeMovie, options, planeReference);
-        stack(:,:,planeIndex,:) = reshape(planeMovie, ...
-            numberOfRows, numberOfColumns, 1, numberOfFrames);
+
+        % Piecewise-rigid / non-rigid correction
+        planeMovie = normcorre_batch( ...
+            planeMovie, ...
+            options, ...
+            planeReference);
+
+        stack(:,:,planeIndex,:) = reshape( ...
+            planeMovie, ...
+            numberOfRows, ...
+            numberOfColumns, ...
+            1, ...
+            numberOfFrames);
     end
+
 else
-    stack = normcorre_batch(stack, options, reference);
+    % Full 3D piecewise-rigid / non-rigid registration
+    stack = normcorre_batch( ...
+        stack, ...
+        options, ...
+        reference);
 end
-end%FCN:correctStack
+
+end % FCN:correctStack
 
 %% ------------------------------------------------------------------------
 

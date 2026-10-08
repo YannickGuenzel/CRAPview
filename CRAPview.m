@@ -30,7 +30,7 @@
 % - https://github.com/YannickGuenzel/CalciSeg
 % - https://github.com/altmany/export_fig
 %
-% Version: 07-Oct-2026 | (R2024a)
+% Version: 08-Oct-2026 | (R2024a)
 
 clear all; close all; clc
 delete(gcp('nocreate'))
@@ -54,7 +54,14 @@ SET.CorrectMotion = true;
 % used as an template. Or all trials are corrected separately.
 SET.CorrectMotion_pool = 'together';                                       % 'together' or 'template' or 'separate'
 % Set for how may iterations NoRMCorre should run
-SET.NoRMCorre_iter = 10;
+SET.NoRMCorre_iter = 3;
+% More detailed settings for non-rigid motion correction. If the data are
+% single-plane recordings, the third value will  be dropped automatically
+SET.NoRMCorre_gridSize    = [32, 32, 4];
+SET.NoRMCorre_overlap_pre = [16, 16, 2];
+SET.NoRMCorre_mot_uf      = [04, 04, 1];
+SET.NoRMCorre_max_shift   = [24, 24, 2];
+SET.NoRMCorre_max_dev     = [03, 03, 1];
 % If the data is 3D, i.e., a volume over time, set whether the motion
 % correction should be done per plane (2D) or applied to the whole volume
 % at once (3D; this requires a lot of memory)
@@ -69,10 +76,14 @@ SET.SmoothData_spat_type = 'med-gauss';                                    % 'me
 SET.SmoothData_spat = [3 1];
 
 % Set whether to apply temporal filtering and which method to use.
-% Available approaches are: movmean and movmedian. Specify a window length
-% in frames. Set SmoothData_temp_type=[]; to skip temporal smoothing
-SET.SmoothData_temp_type = 'movmedian';                                    % 'movmean' or 'movmedian'
-SET.SmoothData_temp = 3;
+% Available approaches are: movmean, movmedian, or n-th order butterworth 
+% low-pass filter. For movmean or movmedian specify a window length in
+% frames. For butterworth, specifiy filter order and cutt-off frequency in
+% Hz (e.g., SET.SmoothData_temp = [4, 1] for a 4th order filter with a 1Hz
+% cutt-off.
+% Set SmoothData_temp_type=[]; to skip temporal smoothing
+SET.SmoothData_temp_type = 'butter';                                       % 'movmean' or 'movmedian' or 'butter'
+SET.SmoothData_temp = [4 1];
 
 % Set whether the individual planes of a volume should be compressed to a
 % single plane using a maximum projection
@@ -107,8 +118,7 @@ if strcmp(SET.segmentation_method, 'CalciSeg')
     SET.segmentation_settings.projection_method = 'std';
     SET.segmentation_settings.init_seg_method = 'rICA';
     SET.segmentation_settings.n_rep = 100;
-    SET.segmentation_settings.refinement_method = 'corr';
-    SET.segmentation_settings.detrend = 'linear';
+    SET.segmentation_settings.refinement_method = 'rmse';
     SET.segmentation_settings.limitPixCount = [25 inf];
     SET.segmentation_settings.corr_thresh = 0.95;
     SET.segmentation_settings.fillmissing = true;
@@ -550,21 +560,13 @@ use2D = strcmp(SET.NoRMCorre_dim, '2D');
 
 if use2D
     registrationDepth = 1;
-
-    gridSize    = [32, 32];
-    overlap_pre = [16, 16];
-    mot_uf      = [4, 4];
-    max_shift   = [24, 24];
-    max_dev     = [3, 3];
-
+    SET.NoRMCorre_gridSize =    SET.NoRMCorre_gridSize(1:2);
+    SET.NoRMCorre_overlap_pre = SET.NoRMCorre_overlap_pre(1:2);
+    SET.NoRMCorre_mot_uf =      SET.NoRMCorre_mot_uf(1:2);
+    SET.NoRMCorre_max_shift =   SET.NoRMCorre_max_shift(1:2);
+    SET.NoRMCorre_max_dev =     SET.NoRMCorre_max_dev(1:2);
 else
     registrationDepth = numberOfPlanes;
-
-    gridSize    = [32, 32, 4];
-    overlap_pre = [16, 16, 2];
-    mot_uf      = [4, 4, 1];
-    max_shift   = [24, 24, 2];
-    max_dev     = [3, 3, 1];
 end
 
 % Non-rigid NoRMCorre parameters
@@ -572,15 +574,15 @@ options = NoRMCorreSetParms( ...
     'd1', numberOfRows, ...
     'd2', numberOfColumns, ...
     'd3', registrationDepth, ...
-    'iter', SET.NoRMCorre_iter, ...
-    'print_msg', false, ...
+    'iter',         SET.NoRMCorre_iter, ...
+    'print_msg',    false, ...
     'use_parallel', true, ...
     'upd_template', isempty(reference), ...
-    'grid_size', gridSize, ...
-    'overlap_pre', overlap_pre, ...
-    'mot_uf', mot_uf, ...
-    'max_shift', max_shift, ...
-    'max_dev', max_dev);
+    'grid_size',    SET.NoRMCorre_gridSize, ...
+    'overlap_pre',  SET.NoRMCorre_overlap_pre, ...
+    'mot_uf',       SET.NoRMCorre_mot_uf, ...
+    'max_shift',    SET.NoRMCorre_max_shift, ...
+    'max_dev',      SET.NoRMCorre_max_dev);
 
 if use2D
     % Register each Z-plane independently in XY
@@ -668,6 +670,18 @@ if ~isempty(SET.SmoothData_temp_type)
                 STACK.(SET.trial_names_clean{iTrial}) = movmean(STACK.(SET.trial_names_clean{iTrial}), SET.SmoothData_temp, 4);
             case 'movmedian'
                 STACK.(SET.trial_names_clean{iTrial}) = movmedian(STACK.(SET.trial_names_clean{iTrial}), SET.SmoothData_temp, 4);
+            case 'butter'
+                % Design filter
+                Fs = median(1./diff(SET.(SET.trial_names_clean{iTrial}).relativeTime(1,:)));
+                [b,a] = butter(SET.SmoothData_temp(1), SET.SmoothData_temp(2)/(Fs/2), 'low');
+                % Reshape data and filter
+                X = STACK.(SET.trial_names_clean{iTrial});
+                X = permute(X,[4 1 2 3]);
+                X = filtfilt(b,a,X);
+                X = ipermute(X,[4 1 2 3]);
+                % Put back
+                STACK.(SET.trial_names_clean{iTrial}) = X;
+                clear X
         end%switch
     end%iTrial
 

@@ -30,8 +30,9 @@
 % - https://github.com/YannickGuenzel/CalciSeg
 % - https://github.com/altmany/export_fig
 %
-% Version: 08-Oct-2026 | (R2024a)
+% Version: 06-Nov-2026 | (R2024a)
 
+warning off
 clear all; close all; clc
 delete(gcp('nocreate'))
 parpool("Threads");
@@ -48,26 +49,33 @@ SET.GithubPath = '...\GitHub\';
 % This setting allows you to remove it.
 SET.dropTop = true;
 
-% Set whether to correct for motion using NoRMCorre with standard settings.
-SET.CorrectMotion = true;
 % Set whether to process trials together. Alternatively, trial one can be
 % used as an template. Or all trials are corrected separately.
 SET.CorrectMotion_pool = 'together';                                       % 'together' or 'template' or 'separate'
+
+% Affine motion registration before NoRMCorre.
+SET.AffineCorrectMotion = true;
+SET.Affine_iter = 10;
+SET.Affine_maxIter = 250;
+SET.Affine_tformType = 'affine';                                           % 'affine' or 'translation' or 'rigid" or 'similarity'	
+
+% Set whether to correct for motion using NoRMCorre with standard settings.
+SET.NonrigidCorrectMotion = true;
 % Set for how may iterations NoRMCorre should run
 SET.NoRMCorre_iter = 3;
 % More detailed settings for non-rigid motion correction. If the data are
 % single-plane recordings, the third value will  be dropped automatically
-SET.NoRMCorre_gridSize    = [32, 32, 4];
-SET.NoRMCorre_overlap_pre = [16, 16, 2];
-SET.NoRMCorre_mot_uf      = [04, 04, 1];
-SET.NoRMCorre_max_shift   = [24, 24, 2];
-SET.NoRMCorre_max_dev     = [03, 03, 1];
+SET.NoRMCorre_gridSize       = [32, 32, 4];
+SET.NoRMCorre_overlap_pre    = [24, 24, 2];
+SET.NoRMCorre_overlap_post   = [24, 24, 2];
+SET.NoRMCorre_mot_uf         = [04, 04, 1];
+SET.NoRMCorre_max_shift      = [24, 24, 2];
+SET.NoRMCorre_max_dev        = [24, 24, 1];
+SET.NoRMCorre_min_patch_size = [16, 16, 1];
 % If the data is 3D, i.e., a volume over time, set whether the motion
 % correction should be done per plane (2D) or applied to the whole volume
 % at once (3D; this requires a lot of memory)
 SET.NoRMCorre_dim = '2D';                                                  % '2D' or '3D'
-% Add pixels on every XY edge for padding
-SET.NoRMCorre_padding = 0;
 
 % Set the standard deviation for 2D Gaussian filtering ('gauss'), box
 % size for 2D median filtering ('med'), or both [box, std] for
@@ -88,7 +96,7 @@ SET.SmoothData_temp = [4 1];
 % Set whether the individual planes of a volume should be compressed to a
 % single plane using a maximum projection
 SET.max_compression = false;
-SET.max_compression_planes = 5:10;
+SET.max_compression_planes = 10:11;
 
 % Set which segmentation approach to take. Choose CalciSeg for most
 % imaging data and an unbiased approach. For now, it will operate on each
@@ -103,7 +111,7 @@ SET.segmentation_method = 'CalciSeg';                                      % 'Ca
 % and the end frame, i.e., SET.dFF_value=[start stop]. For the quantile,
 % just the quantile, e.g., SET.dFF_value=0.05.
 SET.dFF_type = 'window';                                                   % 'window' or 'quantile'
-SET.dFF_value = [5 15];
+SET.dFF_value = [5 50];
 
 % Set whether to re-run already procesed data
 SET.overwrite = true;
@@ -117,10 +125,10 @@ if strcmp(SET.segmentation_method, 'CalciSeg')
     SET.segmentation_settings.quiet = false;
     SET.segmentation_settings.projection_method = 'std';
     SET.segmentation_settings.init_seg_method = 'rICA';
-    SET.segmentation_settings.n_rep = 100;
+    SET.segmentation_settings.n_rep = 3;
     SET.segmentation_settings.refinement_method = 'rmse';
-    SET.segmentation_settings.limitPixCount = [25 inf];
-    SET.segmentation_settings.corr_thresh = 0.95;
+    SET.segmentation_settings.limitPixCount = [1 inf];
+    SET.segmentation_settings.corr_thresh = 0.99;
     SET.segmentation_settings.fillmissing = true;
     SET.segmentation_settings.pool_fragments = true;
 
@@ -149,7 +157,6 @@ addpath(genpath([SET.GithubPath, 'export_fig']))
 SET.colmap = brewermap(1000, 'RdPu');
 
 %% Process data
-
 
 % Get the path to raw data
 SET.path2animal = uigetdir(pwd, 'Select folder listing all animals');
@@ -261,12 +268,30 @@ for iAni = 1:size(curr.dir.all, 1)
                         SET.(voltageName) = voltage; % Retain the existing named-recording entry.
                     end
                     SET.(trialName).voltage = voltage;
+                    % Prepare a mask
+                    SET.STACK_mask.(SET.trial_names_clean{iTrial}) = ones(...
+                            size(STACK.(SET.trial_names_clean{iTrial}),1), ...
+                            size(STACK.(SET.trial_names_clean{iTrial}),2), ...
+                            size(STACK.(SET.trial_names_clean{iTrial}),3))==1;
                 end%iTrial
 
+                % Compress planes before motion correction if we are
+                % requesting only a single plane
+                if SET.max_compression && isscalar(SET.max_compression_planes)
+                    [STACK,SET] = compressPlanes(STACK, SET);
+                end
 
-                % Correct motion
+                
+                % Affine motion correction
                 % ---------------------------------------------------------
-                if SET.CorrectMotion
+                if SET.AffineCorrectMotion
+                    STACK = affinecorrectMotion(STACK, SET);
+                end
+
+                
+                % Non-rigid motion correction
+                % ---------------------------------------------------------
+                if SET.NonrigidCorrectMotion
                     STACK = correctMotion(STACK, SET);
                 end%if correct motion
 
@@ -278,22 +303,9 @@ for iAni = 1:size(curr.dir.all, 1)
 
                 % Compress planes using a maximum intensity compression
                 % ---------------------------------------------------------
-                if SET.max_compression
-                    for iTrial = 1:SET.N
-                        trialName = SET.trial_names_clean{iTrial};
-                        STACK.(trialName) = max(STACK.(trialName)(:,:,SET.max_compression_planes,:), [], 3);
-                        % Keep original plane times; a projected volume has no
-                        % single exact acquisition time. Use their mean as its reference.
-                        SET.(trialName).relativeTime_planes = SET.(trialName).relativeTime;
-                        SET.(trialName).absoluteTime_planes = SET.(trialName).absoluteTime;
-                        SET.(trialName).n_planes_before_compression = SET.(trialName).n_planes;
-                        SET.(trialName).relativeTime = mean(SET.(trialName).relativeTime, 1);
-                        SET.(trialName).absoluteTime = mean(SET.(trialName).absoluteTime, 1);
-                        SET.(trialName).n_planes = 1;
-                        SET.(trialName).DataDimensionality = 2;
-                    end%iTrial
-                    SET.DataDimensionality = 2;
-                end%if compress
+                if SET.max_compression && length(SET.max_compression_planes)>1
+                    [STACK,SET] = compressPlanes(STACK, SET);
+                end
 
 
                 % Segment data
@@ -474,12 +486,12 @@ for cycleIndex = 1:numberOfCycles
         page = str2double(char(selectedFile.getAttribute('page')));
         assert(isfinite(page) && page >= 1 && page == fix(page), ...
             'Invalid TIFF page for %s.', filename);
-        snapshot = im2single(imread(fullfile(trialFolder, filename), page));
+        snapshot = im2double(imread(fullfile(trialFolder, filename), page));
         if isempty(STACK)
             SET.(trialName).xy = [size(snapshot,1), size(snapshot,2)];
             SET.(trialName).channel = SET.Channel;
             STACK = nan([SET.(trialName).xy, SET.(trialName).n_planes, ...
-                SET.(trialName).n_frames], 'single');
+                SET.(trialName).n_frames], 'double');
         end
         if numberOfCycles == 1
             STACK(:,:,1,frameIndex) = snapshot;
@@ -492,137 +504,337 @@ end%FCN:getStack
 
 %% ------------------------------------------------------------------------
 
+function [STACK,SET] = compressPlanes(STACK, SET)
+% Compress selected planes using a maximum intensity projection.
+% SET.STACK_mask contains one logical spatial mask per trial.
+
+planes = SET.max_compression_planes;
+for iTrial = 1:SET.N
+    trialName = SET.trial_names_clean{iTrial};
+
+    % Project the selected planes and intersect their common masks
+    projectedStack = max(STACK.(trialName)(:,:,planes,:), [], 3);
+    projectedMask = all(SET.STACK_mask.(trialName)(:,:,planes), 3);
+
+    % Exclude pixels outside the projected mask in every frame
+    for iFrame = 1:size(projectedStack,4)
+        frame = projectedStack(:,:,1,iFrame);
+        frame(~projectedMask) = NaN;
+        projectedStack(:,:,1,iFrame) = frame;
+    end%iFrame
+
+    STACK.(trialName) = projectedStack;
+    SET.STACK_mask.(trialName) = projectedMask;
+
+    % Keep original plane times and use the mean across all planes as the reference
+    SET.(trialName).relativeTime_planes = SET.(trialName).relativeTime;
+    SET.(trialName).absoluteTime_planes = SET.(trialName).absoluteTime;
+    SET.(trialName).n_planes_before_compression = SET.(trialName).n_planes;
+    SET.(trialName).relativeTime = mean(SET.(trialName).relativeTime, 1);
+    SET.(trialName).absoluteTime = mean(SET.(trialName).absoluteTime, 1);
+    SET.(trialName).n_planes = 1;
+    SET.(trialName).DataDimensionality = 2;
+end%iTrial
+
+SET.DataDimensionality = 2;
+end % FCN:compressPlanes
+
+%% ------------------------------------------------------------------------
+
+function STACK = affinecorrectMotion(STACK, SET)
+% Iterative median-reference affine registration independently per Z-plane.
+% Trials use [rows, columns, planes, time], with at least two frames.
+% Outputs are double precision and retain dimensions, plane and frame order.
+%
+% SET.trial_names_clean lists trial fields.
+% SET.CorrectMotion_pool:
+%   together - concatenate trials and update a shared median each iteration.
+%   separate - update an independent median for each trial.
+%   template - register trial 1 with an updated median, then register later
+%              trials against its fixed corrected median.
+% SET.Affine_iter    - outer iterations (default 10).
+% SET.Affine_maxIter - optimizer MaximumIterations (default 250).
+% Optional SET.STACK_mask supplies spatial logical rectangular common masks,
+% as in correctMotion. Shared modes intersect these masks across trials.
+% Without STACK_mask, registration uses the full image.
+%
+% Matches the supplied algorithm: multimodal metric, affine fits, parfor
+% over frames, and cubic resampling of the CURRENT corrected frames.
+% Uncovered pixels are zero-filled and participate in subsequent medians.
+% No intensity normalization or clipping is applied.
+% Input masks select the crop only and are NOT updated output validity masks.
+% Pixels outside a selected crop retain their input values.
+% Requires Image Processing Toolbox. parfor can use Parallel Computing Toolbox.
+
+if ~isfield(SET,'Affine_iter'), SET.Affine_iter = 10; end
+if ~isfield(SET,'Affine_maxIter'), SET.Affine_maxIter = 250; end
+validateattributes(SET.Affine_iter, {'numeric'}, ...
+    {'scalar','real','finite','integer','positive'});
+validateattributes(SET.Affine_maxIter, {'numeric'}, ...
+    {'scalar','real','finite','integer','positive'});
+
+names = SET.trial_names_clean;
+assert(~isempty(names), 'No trials supplied.');
+mode = validatestring(SET.CorrectMotion_pool, {'separate','together','template'});
+input = STACK;
+inputMask = struct();
+if isfield(SET,'STACK_mask')
+    inputMask = SET.STACK_mask;
+end
+spatial = zeros(numel(names),3);
+
+% Check trial dimensions and allocate outputs.
+for k = 1:numel(names)
+    name = names{k};
+    movie = input.(name);
+    assert(isnumeric(movie) && isreal(movie) && ndims(movie) == 4 && ...
+        size(movie,4) >= 2, 'Expected [rows, columns, planes, time] with at least two frames for %s.',name);
+    spatial(k,:) = [size(movie,1),size(movie,2),size(movie,3)];
+    if ~isfield(SET,'STACK_mask')
+        inputMask.(name) = true(spatial(k,:));
+    end
+    assert(isfield(inputMask,name), 'Missing STACK_mask for %s.',name);
+    mask = inputMask.(name);
+    assert(islogical(mask) && ndims(mask) <= 3 && ...
+        isequal([size(mask,1),size(mask,2),size(mask,3)],spatial(k,:)), ...
+        'Expected a spatial logical common mask for %s.',name);
+    STACK.(name) = double(movie);
+end
+
+% Group trials sharing a registration crop.
+if strcmp(mode,'separate')
+    groups = num2cell(1:numel(names));
+else
+    assert(all(all(spatial == spatial(1,:))), ...
+        'Shared registration requires matching spatial dimensions.');
+    groups = {1:numel(names)};
+end
+
+for g = 1:numel(groups)
+    group = groups{g};
+    first = group(1);
+    common = inputMask.(names{first});
+    for k = group(2:end)
+        common = common & inputMask.(names{k});
+    end
+
+    for plane = 1:spatial(first,3)
+        % Use the rectangular mask intersection, matching correctMotion.
+        footprint = common(:,:,plane);
+        rows = find(any(footprint,2));
+        cols = find(any(footprint,1));
+        assert(~isempty(rows) && ~isempty(cols) && ...
+            all(diff(rows)==1) && all(diff(cols)==1) && ...
+            all(all(footprint(rows,cols))), ...
+            'Expected a nonempty rectangular mask intersection for %s, plane %d.', ...
+            names{first},plane);
+
+        if strcmp(mode,'together')
+            batches = {group};
+        else
+            batches = num2cell(group);
+        end
+        reference = [];
+        for b = 1:numel(batches)
+            members = batches{b};
+            crops = cell(size(members));
+            for j = 1:numel(members)
+                crop = input.(names{members(j)})(rows,cols,plane,:);
+                assert(all(isfinite(crop(:))), ...
+                    'Nonfinite input inside the crop for %s.',names{members(j)});
+                crops{j} = double(crop);
+            end
+            counts = cellfun(@(x) size(x,4),crops);
+            aligned = registerAffineCrop(cat(4,crops{:}),SET,reference);
+
+            % Restore original trial boundaries and spatial coordinates.
+            offset = 0;
+            for j = 1:numel(members)
+                name = names{members(j)};
+                frames = offset + (1:counts(j));
+                STACK.(name)(rows,cols,plane,:) = aligned(:,:,:,frames);
+                offset = frames(end);
+            end
+            if strcmp(mode,'template') && b == 1 && numel(batches) > 1
+                reference = median(aligned,4);
+            end
+        end
+    end
+end
+end % FCN:affinecorrectMotion
+
+function aligned = registerAffineCrop(movie,SET,reference)
+% Preserve the user's iterative cubic-warp algorithm on one plane.
+nr = size(movie,1);
+nc = size(movie,2);
+nt = size(movie,4);
+assert(nr >= 4 && nc >= 4, ...
+    'Affine registration crop must span at least four rows and columns.');
+aligned = reshape(movie,nr,nc,nt);
+if ~isempty(reference)
+    reference = reshape(reference,nr,nc);
+end
+
+[optimizer,metric] = imregconfig("multimodal");
+optimizer.MaximumIterations = SET.Affine_maxIter;
+outputView = imref2d([nr nc]);
+
+for iteration = 1:SET.Affine_iter
+    if isempty(reference)
+        fixed = median(aligned,3);
+    else
+        fixed = reference;
+    end
+
+    % Every fit uses the same iteration snapshot and fixed reference.
+    current = aligned;
+    next = zeros(size(current),'double');
+    tformType = SET.Affine_tformType;
+    parfor frameIndex = 1:nt
+        tform = imregtform(current(:,:,frameIndex),fixed, ...
+            tformType,optimizer,metric);
+        next(:,:,frameIndex) = imwarp(current(:,:,frameIndex), ...
+            tform,"cubic","OutputView",outputView,"FillValues",0);
+    end
+    aligned = next;
+end
+aligned = reshape(aligned,nr,nc,1,nt);
+end % FCN:registerAffineCrop
+
+%% ------------------------------------------------------------------------
+
 function STACK = correctMotion(STACK, SET)
 % Trials must be X-by-Y-by-Z-by-time arrays (at least two timepoints).
 % SET.CorrectMotion_pool: 'together', 'template', or 'separate'.
-% SET.NoRMCorre_padding: pixels per side; scalar or [rows columns] (default 0).
-% Padding replicates XY edges; no padding in Z/time. Outputs are cropped back.
-% SET.NoRMCorre_dim: '2D' or '3D'. Outputs are single precision.
+% SET.NoRMCorre_dim: '2D' or '3D'. Outputs are double precision.
+% SET.STACK_mask: common rigid mask per trial used to select the registration crop.
 
-padding = 0;
-if isfield(SET, 'NoRMCorre_padding')
-    padding = SET.NoRMCorre_padding;
-end
-validateattributes(padding, {'numeric'}, ...
-    {'vector','real','finite','integer','nonnegative'});
-if isscalar(padding), padding = [padding padding]; end
-assert(numel(padding) == 2, 'Padding must be a scalar or [rows columns].');
-padding = double(padding(:)');
+names = SET.trial_names_clean;
+assert(~isempty(names), 'No trials supplied.');
+mode = validatestring(SET.CorrectMotion_pool, {'separate','together','template'});
+use2D = strcmp(validatestring(SET.NoRMCorre_dim, {'2D','3D'}), '2D');
+input = STACK;
+inputMask = SET.STACK_mask;
+spatial = zeros(numel(names),3);
 
-trialNames = SET.trial_names_clean;
-trials = cell(size(trialNames));
-originalSizes = zeros(numel(trialNames), 2);
-for trialIndex = 1:numel(trialNames)
-    trial = single(STACK.(trialNames{trialIndex}));
-    originalSizes(trialIndex,:) = [size(trial,1), size(trial,2)];
-    trials{trialIndex} = padarray(trial, [padding 0 0], 'replicate', 'both');
-end
-
-switch SET.CorrectMotion_pool
-    case 'together'
-        frameCounts = cellfun(@(trial) size(trial,4), trials);
-        combinedStack = correctStack(cat(4, trials{:}), SET, []);
-        firstFrame = 1;
-        for trialIndex = 1:numel(trials)
-            lastFrame = firstFrame + frameCounts(trialIndex) - 1;
-            trials{trialIndex} = combinedStack(:,:,:,firstFrame:lastFrame);
-            firstFrame = lastFrame + 1;
-        end
-
-    case 'template'
-        trials{1} = correctStack(trials{1}, SET, []);
-        reference = mean(trials{1}, 4, 'omitnan');
-        for trialIndex = 2:numel(trials)
-            trials{trialIndex} = correctStack(trials{trialIndex}, SET, reference);
-        end
-
-    case 'separate'
-        for trialIndex = 1:numel(trials)
-            trials{trialIndex} = correctStack(trials{trialIndex}, SET, []);
-        end
+% Check trial dimensions and allocate the output stacks
+for k = 1:numel(names)
+    name = names{k};
+    movie = input.(name);
+    mask = inputMask.(name);
+    spatial(k,:) = [size(movie,1), size(movie,2), size(movie,3)];
+    assert(isnumeric(movie) && isreal(movie) && ndims(movie) == 4 && ...
+        size(movie,4) >= 2, 'Expected at least two frames for %s.',name);
+    assert(islogical(mask) && ndims(mask) <= 3 && ...
+        isequal([size(mask,1),size(mask,2),size(mask,3)],spatial(k,:)), ...
+        'Expected a spatial logical common mask for %s.',name);
+    STACK.(name) = double(movie);
 end
 
-for trialIndex = 1:numel(trials)
-    rows = padding(1) + (1:originalSizes(trialIndex,1));
-    columns = padding(2) + (1:originalSizes(trialIndex,2));
-    STACK.(trialNames{trialIndex}) = trials{trialIndex}(rows,columns,:,:);
-end
-end%FCN:correctMotion
-
-function stack = correctStack(stack, SET, reference)
-
-numberOfRows = size(stack,1);
-numberOfColumns = size(stack,2);
-numberOfPlanes = size(stack,3);
-numberOfFrames = size(stack,4);
-
-use2D = strcmp(SET.NoRMCorre_dim, '2D');
-
-if use2D
-    registrationDepth = 1;
-    SET.NoRMCorre_gridSize =    SET.NoRMCorre_gridSize(1:2);
-    SET.NoRMCorre_overlap_pre = SET.NoRMCorre_overlap_pre(1:2);
-    SET.NoRMCorre_mot_uf =      SET.NoRMCorre_mot_uf(1:2);
-    SET.NoRMCorre_max_shift =   SET.NoRMCorre_max_shift(1:2);
-    SET.NoRMCorre_max_dev =     SET.NoRMCorre_max_dev(1:2);
+% Group trials that share a registration crop
+if strcmp(mode,'separate')
+    groups = num2cell(1:numel(names));
 else
-    registrationDepth = numberOfPlanes;
+    assert(all(all(spatial == spatial(1,:))), ...
+        'Shared registration requires matching spatial dimensions.');
+    groups = {1:numel(names)};
 end
 
-% Non-rigid NoRMCorre parameters
-options = NoRMCorreSetParms( ...
-    'd1', numberOfRows, ...
-    'd2', numberOfColumns, ...
-    'd3', registrationDepth, ...
-    'iter',         SET.NoRMCorre_iter, ...
-    'print_msg',    false, ...
-    'use_parallel', true, ...
-    'upd_template', isempty(reference), ...
-    'grid_size',    SET.NoRMCorre_gridSize, ...
-    'overlap_pre',  SET.NoRMCorre_overlap_pre, ...
-    'mot_uf',       SET.NoRMCorre_mot_uf, ...
-    'max_shift',    SET.NoRMCorre_max_shift, ...
-    'max_dev',      SET.NoRMCorre_max_dev);
-
-if use2D
-    % Register each Z-plane independently in XY
-    for planeIndex = 1:numberOfPlanes
-
-        planeMovie = reshape( ...
-            stack(:,:,planeIndex,:), ...
-            numberOfRows, ...
-            numberOfColumns, ...
-            numberOfFrames);
-
-        planeReference = [];
-
-        if ~isempty(reference)
-            planeReference = reference(:,:,planeIndex);
-        end
-
-        % Piecewise-rigid / non-rigid correction
-        planeMovie = normcorre_batch( ...
-            planeMovie, ...
-            options, ...
-            planeReference);
-
-        stack(:,:,planeIndex,:) = reshape( ...
-            planeMovie, ...
-            numberOfRows, ...
-            numberOfColumns, ...
-            1, ...
-            numberOfFrames);
+for g = 1:numel(groups)
+    group = groups{g};
+    first = group(1);
+    % Intersect the rigid masks across trials in this group
+    common = inputMask.(names{first});
+    for k = group(2:end)
+        common = common & inputMask.(names{k});
+    end
+    % Register each Z-plane independently in XY, or register the full 3D volume
+    if use2D
+        planeGroups = num2cell(1:spatial(first,3));
+    else
+        planeGroups = {1:spatial(first,3)};
     end
 
-else
-    % Full 3D piecewise-rigid / non-rigid registration
-    stack = normcorre_batch( ...
-        stack, ...
-        options, ...
-        reference);
-end
+    for p = 1:numel(planeGroups)
+        planes = planeGroups{p};
+        % Find the common rectangular crop for these planes
+        footprint = all(common(:,:,planes),3);
+        rows = find(any(footprint,2));
+        cols = find(any(footprint,1));
+        assert(~isempty(rows) && all(diff(rows)==1) && all(diff(cols)==1) ...
+            && all(all(footprint(rows,cols))), ...
+            'Expected a nonempty rectangular rigid-mask intersection for %s, plane %d.', ...
+            names{first},planes(1));
 
-end % FCN:correctStack
+        % Pool frames only in together mode
+        if strcmp(mode,'together')
+            batches = {group};
+        else
+            batches = num2cell(group);
+        end
+        reference = [];
+        for b = 1:numel(batches)
+            members = batches{b};
+            crops = cell(size(members));
+            for j = 1:numel(members)
+                crop = input.(names{members(j)})(rows,cols,planes,:);
+                assert(all(isfinite(crop(:))), 'Nonfinite input inside the crop for %s.',names{members(j)});
+                crops{j} = double(crop);
+            end
+            counts = cellfun(@(x) size(x,4),crops);
+            aligned = registerCrop(cat(4,crops{:}),SET,reference);
+            offset = 0;
+            for j = 1:numel(members)
+                name = names{members(j)};
+                frames = offset + (1:counts(j));
+                offset = frames(end);
+                % Write the corrected crop back at its original coordinates
+                STACK.(name)(rows,cols,planes,:) = aligned(:,:,:,frames);
+            end
+
+            if strcmp(mode,'template') && b == 1 && numel(batches) > 1
+                % Use the corrected first trial as the template for subsequent trials
+                reference = mean(aligned,4);
+            end
+        end
+    end
+end
+end % FCN:correctMotion
+
+function aligned = registerCrop(movie,SET,reference)
+[nr,nc,nz,nt] = size(movie);
+dim = 3;
+if nz == 1
+    dim = 2;
+    movie = reshape(movie,nr,nc,nt);
+end
+assert(nr >= 2 && nc >= 2,'Registration crop must span at least two rows and columns.');
+% Non-rigid NoRMCorre parameters
+options = NoRMCorreSetParms(...
+    'd1',nr,'d2',nc,'d3',nz, ...
+    'iter',SET.NoRMCorre_iter,...
+    'print_msg',false,...
+    'use_parallel',true, ...
+    'upd_template',isempty(reference),...
+    'boundary','copy', ...
+    'grid_size',axesParam(SET.NoRMCorre_gridSize,dim), ...
+    'overlap_pre',axesParam(SET.NoRMCorre_overlap_pre,dim), ...
+    'overlap_post',axesParam(SET.NoRMCorre_overlap_post,dim), ...
+    'mot_uf',axesParam(SET.NoRMCorre_mot_uf,dim), ...
+    'max_shift',axesParam(SET.NoRMCorre_max_shift,dim), ...
+    'min_patch_size', SET.NoRMCorre_min_patch_size, ...
+    'max_dev',axesParam(SET.NoRMCorre_max_dev,dim));
+% Piecewise-rigid / non-rigid correction
+aligned = normcorre_batch(movie,options,reference);
+aligned = reshape(double(aligned),nr,nc,nz,nt);
+end % FCN:registerCrop
+
+function value = axesParam(value,dim)
+% Preserve NoRMCorre's scalar and length-two parameter expansion in 3D.
+if dim == 2 && numel(value)>2
+    value = value(1:2);
+end
+end % FCN:axesParam
 
 %% ------------------------------------------------------------------------
 
@@ -634,7 +846,7 @@ filterType = SET.SmoothData_spat_type;
 
 for trialIndex = 1:numel(SET.trial_names_clean)
     trialName = SET.trial_names_clean{trialIndex};
-    trial = single(STACK.(trialName));
+    trial = double(STACK.(trialName));
     trialSize = size(trial);
 
     % Combine plane and time indices for parallel image filtering.
@@ -673,7 +885,20 @@ if ~isempty(SET.SmoothData_temp_type)
             case 'butter'
                 % Design filter
                 Fs = median(1./diff(SET.(SET.trial_names_clean{iTrial}).relativeTime(1,:)));
-                [b,a] = butter(SET.SmoothData_temp(1), SET.SmoothData_temp(2)/(Fs/2), 'low');
+                Fc = SET.SmoothData_temp(2);
+                Wn = Fc/(Fs/2);
+                % Safety check: butter requires 0 < Wn < 1
+                if Wn >= 1
+                    warning(['Requested cutoff %.3f exceeds Nyquist frequency %.3f. ' ...
+                        'Using %.3f instead.'], ...
+                        Fc, Fs/2, 0.99*(Fs/2));
+
+                    Wn = 0.99;
+                elseif Wn <= 0
+                    warning('Invalid cutoff frequency %.3f. Using minimum positive cutoff.', Fc);
+                    Wn = eps;
+                end
+                [b,a] = butter(SET.SmoothData_temp(1), Wn, 'low');
                 % Reshape data and filter
                 X = STACK.(SET.trial_names_clean{iTrial});
                 X = permute(X,[4 1 2 3]);
@@ -701,7 +926,7 @@ function [STACK_seg, Segmentation] = segmentImages(STACK, SET)
 % STACK_seg averages region pixels for BOTH methods, including background (ID 0).
 % Background is averaged separately within each plane and trial.
 % With segmentation disabled, STACK_seg equals STACK. Integer segmented data
-% are converted to single to preserve fractional region means.
+% are converted to double to preserve fractional region means.
 % Results: Segmentation.(trialName)(planeIndex).pockets_labeled / summary_stats.
 
 trialNames = SET.trial_names_clean;
@@ -747,7 +972,7 @@ if segmentationEnabled
     for trialIndex = 1:numberOfTrials
         trialName = trialNames{trialIndex};
         if ~isfloat(STACK_seg.(trialName))
-            STACK_seg.(trialName) = single(STACK_seg.(trialName));
+            STACK_seg.(trialName) = double(STACK_seg.(trialName));
         end
     end
 end
@@ -767,7 +992,7 @@ for groupIndex = 1:numel(trialGroups)
             end
             sourceMovie = cat(3, sourceMovies{:});
             if strcmp(method, 'CalciSeg') && ~isfloat(sourceMovie)
-                sourceMovie = single(sourceMovie);
+                sourceMovie = double(sourceMovie);
             end
             if quiet
                 evalc('[labelImage, sourceSummary] = feval(method, sourceMovie, segmentationArguments{:});');
@@ -794,7 +1019,7 @@ for groupIndex = 1:numel(trialGroups)
 
             if segmentationEnabled
                 pixelTraces = reshape(planeMovie, [], size(planeMovie, 3));
-                if ~isfloat(pixelTraces), pixelTraces = single(pixelTraces); end
+                if ~isfloat(pixelTraces), pixelTraces = double(pixelTraces); end
                 regionIDs = unique(labelImage(:)); % Include background (ID 0).
                 for regionIndex = 1:numel(regionIDs)
                     regionPixels = labelImage(:) == regionIDs(regionIndex);
@@ -1242,12 +1467,13 @@ assert(any(strcmp({profiles.Name},'MPEG-4')), ...
 assert(exist('export_fig','file') ~= 0, 'Add export_fig to the MATLAB path.');
 trialNames = SET.trial_names_clean;
 videoNames = cellfun(@(name) [name '.mp4'],trialNames(:)', 'UniformOutput',false);
+videoNames_dff = cellfun(@(name) [name '_dff.mp4'],trialNames(:)', 'UniformOutput',false);
 projectionNames = cellfun(@(name) [name '_std_projection.pdf'], ...
     trialNames(:)', 'UniformOutput',false);
 segmentationNames = cellfun(@(name) [name '_segmentation.pdf'], ...
     trialNames(:)', 'UniformOutput',false);
 exportNames = [{'COMPLETE.json','results.mat','stacks.h5','stacks_proc.h5','metadata.json'}, ...
-    trialNames(:)', videoNames, projectionNames, segmentationNames];
+    trialNames(:)', videoNames, videoNames_dff, projectionNames, segmentationNames];
 existing = cellfun(@(name) isfile(fullfile(outputFolder,name)) || ...
     isfolder(fullfile(outputFolder,name)), exportNames);
 assert(~any(existing) || overwrite, ...
@@ -1592,7 +1818,12 @@ end
 colormap(figureHandle,SET.colmap);
 title(layout,[trialName ' | temporal STD'],'Interpreter','none');
 drawnow;
-export_fig(figureHandle,fullfile(folder,projectionName),'-pdf','-painters');
+try
+	export_fig(figureHandle,fullfile(folder,projectionName),'-pdf','-painters');
+catch
+	exportgraphics(figureHandle, [fullfile(folder, char(projectionName)), '.pdf'], 'Padding', 'figure', 'ContentType', 'vector');
+	warning('Saving figure using export_fig() failed. Used exportgraphics() instead.')
+end
 clear figureCleanup
 
 % Assign deterministic categorical colors; label 0 is black. The same
@@ -1632,7 +1863,12 @@ for planeIndex = 1:numberOfPlanes
 end
 title(layout,[trialName ' | segmentation (background = black)'],'Interpreter','none');
 drawnow;
-export_fig(figureHandle,fullfile(folder,segmentationName),'-pdf','-painters');
+try
+	export_fig(figureHandle,fullfile(folder,segmentationName),'-pdf','-painters');
+catch
+	exportgraphics(figureHandle, [fullfile(folder, char(segmentationName)), '.pdf'], 'Padding', 'figure', 'ContentType', 'vector');
+	warning('Saving figure using export_fig() failed. Used exportgraphics() instead.')
+end
 
 pdfInfo.std_projection = projectionName;
 pdfInfo.segmentation = segmentationName;

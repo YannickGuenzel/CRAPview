@@ -1,7 +1,7 @@
 %% CRAPview
 % Process PrairieView two-photon imaging trials: load a selected channel
 % and acquisition timestamps, optionally correct motion, filter images,
-% identify usable frames, segment ROIs, and calculate pixel and region dF/F.
+% segment ROIs, and calculate pixel and region dF/F.
 % Supports single-plane and volumetric recordings with shared or
 % trial-specific segmentation.
 %
@@ -30,7 +30,7 @@
 % - https://github.com/YannickGuenzel/CalciSeg
 % - https://github.com/altmany/export_fig
 %
-% MATLAB R2024a
+% MATLAB target R2024a
 
 % Report processing warnings and record failures separately for each animal.
 clear all; close all; clc
@@ -62,7 +62,7 @@ SET.Affine_tformType = 'affine';                                           % 'af
 % Set whether to correct for motion using NoRMCorre with standard settings.
 SET.NonrigidCorrectMotion = true;
 % Set for how may iterations NoRMCorre should run
-SET.NoRMCorre_iter = 3;
+SET.NoRMCorre_iter = 5;
 % More detailed settings for non-rigid motion correction. If the data are
 % single-plane recordings, the third value will  be dropped automatically
 SET.NoRMCorre_gridSize       = [32, 32, 4];
@@ -123,20 +123,6 @@ SET.segmentation_method = 'CalciSeg';                                      % 'Ca
 SET.dFF_type = 'window';                                                   % 'window', 'quantile' or 'trigger'
 SET.dFF_value = [5 20];
 
-%% More detailed settings
-
-% Frame QC. Enter the detector clipping level in stored TIFF units for
-% systems whose ADC range is narrower than the TIFF integer class.
-SET.SaturationLevel = [];          % Empty uses the integer TIFF storage ceiling.
-SET.MaxSaturatedFraction = 0.01;
-SET.FlashMAD = 8;                  % Robust brightness outlier threshold, for review.
-SET.ExcludeBrightFrames = false;   % Enable only for acquisitions with known flash artifacts.
-SET.ExcludeFrames = struct();      % E.g. SET.ExcludeFrames.TSeries_001 = [12 13];
-SET.GapFactor = 1.5;               % Split temporal processing at long frame intervals.
-SET.MaxMotionPx = Inf;             % Maximum registration displacement in pixels/voxels.
-SET.MinReferenceCorrelation = -1; % Raise to exclude poorly aligned frames.
-SET.AxialCorrelationMargin = 0.05; % Neighboring plane preference flags frames for review.
-
 % For 'trigger', set dFF_value to [start end] in seconds from the selected
 % edge. Offset converts voltage recording seconds to imaging relative time.
 SET.TriggerEdge = 'rising';        % 'rising' or 'falling'
@@ -149,9 +135,10 @@ SET.MinBaselineFrames = 1;
 % Embed each acquired frame using segmented dF/F traces pooled across trials.
 SET.FramePCA = true;
 
-% Set colors
-SET.colmap = 'RdBu';      % BrewerMap
-SET.TrialColors = 'Set2'; % MATLAB color order (SET.TrialColors=[];), or a BrewerMap name such as 'Set2'.
+% Set nice colors
+SET.colmap = 'RdBu';   % BrewerMap
+
+SET.TrialColors = [];  % MATLAB color order (SET.TrialColors = [];), or a BrewerMap name such as 'Set2'.
 
 % Record the seed used at the segmentation call for each animal.
 SET.RandomSeed = 1;
@@ -169,7 +156,7 @@ if strcmp(SET.segmentation_method, 'CalciSeg')
     SET.segmentation_settings.projection_method = 'std';
     SET.segmentation_settings.init_seg_method = 'rICA';
     SET.segmentation_settings.detrend = 'dff';
-    SET.segmentation_settings.n_PCA = 99;
+    SET.segmentation_settings.n_PCA = 95;
     SET.segmentation_settings.n_rep = 5;
     SET.segmentation_settings.refinement_method = 'rmse';
     SET.segmentation_settings.limitPixCount = [9 inf];
@@ -198,37 +185,27 @@ addpath(genpath([SET.GithubPath, 'CalciSeg']))
 % --- https://github.com/altmany/export_fig
 addpath(genpath([SET.GithubPath, 'export_fig']))
 
-% Check QC thresholds before starting a batch. Trigger times are expressed
-% relative to imaging start after applying the configured clock offset.
-validateattributes(SET.MaxSaturatedFraction,{'numeric'},{'scalar','real','>=',0,'<=',1});
-if ~isempty(SET.SaturationLevel)
-    validateattributes(SET.SaturationLevel,{'numeric'},{'scalar','real','finite','positive'});
-end
-validateattributes(SET.MaxMotionPx,{'numeric'},{'scalar','real','nonnegative','nonnan'});
-validateattributes(SET.MinReferenceCorrelation,{'numeric'},{'scalar','>=',-1,'<=',1});
-validateattributes(SET.AxialCorrelationMargin,{'numeric'},{'scalar','finite','nonnegative'});
-validateattributes(SET.GapFactor,{'numeric'},{'scalar','finite','>',1});
-validateattributes(SET.FlashMAD,{'numeric'},{'scalar','positive','finite'});
-validateattributes(SET.TriggerIndex,{'numeric'},{'scalar','positive','integer'});
-SET.TriggerEdge = validatestring(SET.TriggerEdge,{'rising','falling'});
-validateattributes(SET.VoltageTimeOffset,{'numeric'},{'scalar','real','finite'});
-validateattributes(SET.MinBaseline,{'numeric'},{'scalar','real','finite','nonnegative'});
-validateattributes(SET.MinBaselineFraction,{'numeric'},{'scalar','real','finite','>=',0,'<=',1});
-validateattributes(SET.MinBaselineFrames,{'numeric'},{'scalar','positive','integer'});
+% Validate trigger selection and baseline settings.
+validateattributes(SET.TriggerIndex, {'numeric'}, {'scalar', 'positive', 'integer'});
+SET.TriggerEdge = validatestring(SET.TriggerEdge, {'rising', 'falling'});
+validateattributes(SET.VoltageTimeOffset, {'numeric'}, {'scalar', 'real', 'finite'});
+validateattributes(SET.MinBaseline, {'numeric'}, {'scalar', 'real', 'finite', 'nonnegative'});
+validateattributes(SET.MinBaselineFraction, {'numeric'}, {'scalar', 'real', 'finite', '>=', 0, '<=', 1});
+validateattributes(SET.MinBaselineFrames, {'numeric'}, {'scalar', 'positive', 'integer'});
 
 % Record external toolbox entry points once per batch.
 SET.codeFiles = struct();
-entries = {'normcorre_batch','CalciSeg','brewermap','export_fig'};
-for k = 1:numel(entries)
-    filename = which(entries{k});
+entries = {'normcorre_batch', 'CalciSeg', 'brewermap', 'export_fig'};
+for iToolbox = 1:numel(entries)
+    filename = which(entries{iToolbox});
     if ~isempty(filename) && isfile(filename)
-        SET.codeFiles.(entries{k}) = struct('path',filename,'sha256',sourceDigest(filename), ...
-            'git_revision',gitRevision(fileparts(filename)));
+        SET.codeFiles.(entries{iToolbox}) = struct('path', filename, 'sha256', sourceDigest(filename), ...
+            'git_revision', gitRevision(fileparts(filename)));
     end
 end
 
 % Set a nice colormap for saving
-SET.colmap = brewermap(1000, SET.colmap);
+SET.colmap = flipud(brewermap(1000, SET.colmap));
 
 %% Process data
 
@@ -242,18 +219,16 @@ end%if folder
 
 % Get an overview of animal folders
 curr.dir.all = dir(SET.path2animal);
-% Keep a per-run summary beside the animal folders. Reset trial-specific
+% Keep a per-run summary in memory. Reset trial-specific
 % settings between animals, including after an interrupted animal.
 baseSettings = SET;
 batch = table('Size',[0 4],'VariableTypes',repmat({'string'},1,4), ...
     'VariableNames',{'animal','status','stage','message'});
-[~,runID] = fileparts(tempname);
-batchFile = fullfile(SET.path2animal,['CRAPview_batch_' runID '.csv']);
 assert(any(contains({curr.dir.all.name},'Animal') & [curr.dir.all.isdir]),'No animal folders found.');
 
 % Iterate over all animals
 for iAni = 1:size(curr.dir.all, 1)
-    clearvars -except iAni curr baseSettings batch batchFile
+    clearvars -except iAni curr baseSettings batch
     SET = baseSettings;
     % Check whether this is what we are looking for, i.e. whether the
     % string "Animal" is present
@@ -355,7 +330,7 @@ for iAni = 1:size(curr.dir.all, 1)
                         fallingIndices = find(diff(voltageData(:,2)) < -0.5*max(voltageData(:,2))) + 1;
                         voltage.risingTime = voltageData(risingIndices,1);
                         voltage.fallingTime = voltageData(fallingIndices,1);
-                        SET.(voltageName) = voltage; % Retain the existing named-recording entry.
+                        SET.(voltageName) = voltage; % Store the recording under its acquisition name.
                     end
                     SET.(trialName).voltage = voltage;
                     QC.(trialName).sourcePlanes = (1:size(STACK.(trialName),3)) + ...
@@ -371,16 +346,13 @@ for iAni = 1:size(curr.dir.all, 1)
                 % requesting only a single plane
                 if SET.max_compression && isscalar(SET.max_compression_planes)
                     [STACK,SET] = compressPlanes(STACK, SET);
-                    for k = 1:SET.N
-                        name = SET.trial_names_clean{k};
+                    for iTrial = 1:SET.N
+                        name = SET.trial_names_clean{iTrial};
                         QC.(name).sourcePlanes = QC.(name).sourcePlanes(SET.max_compression_planes);
                     end
                 end
 
-                % Keep the incoming fluorescence for direct before/after alignment scores.
                 stage = "registration";
-                unregistered = STACK;
-
                 % Affine motion correction
                 % ---------------------------------------------------------
                 if SET.AffineCorrectMotion
@@ -395,33 +367,41 @@ for iAni = 1:size(curr.dir.all, 1)
                 end%if correct motion
 
 
-                % Score registration and identify frame gaps before temporal processing.
-                stage = "frame QC";
-                [QC,SET] = assessFrames(unregistered,STACK,QC,SET);
-                clear unregistered
-
-                % Prepare the detection and measurement movies separately. Process
-                % each contiguous good run at its own plane's acquisition rate.
-                stage = "filtering and detrending";
-                [detection,STACK,QC] = prepareMovies(STACK,SET,QC);
-
-                % Project the same planes in both branches and retain native-plane QC.
-                if SET.max_compression && numel(SET.max_compression_planes)>1
-                    [detection,~] = compressPlanes(detection,SET);
-                    [STACK,SET] = compressPlanes(STACK,SET);
-                    QC = projectQuality(QC,SET);
-                    for k = 1:SET.N
-                        name = SET.trial_names_clean{k};
-                        bad = QC.(name).planes.frames.excluded;
-                        STACK.(name)(:,:,:,bad) = NaN;
+                % Apply the spatial registration support and retain the mean
+                % registered image used for anatomical overlays.
+                for iTrial = 1:SET.N
+                    name = SET.trial_names_clean{iTrial};
+                    mask = SET.STACK_mask.(name);
+                    if isfield(QC.(name),'validMask')
+                        mask = mask & QC.(name).validMask;
+                        SET.STACK_mask.(name) = mask;
+                    end
+                    movie = STACK.(name);
+                    if SET.max_compression && numel(SET.max_compression_planes)>1
+                        planes = SET.max_compression_planes;
+                        movie = max(movie(:,:,planes,:),[],3);
+                        mask = all(mask(:,:,planes),3);
+                    end
+                    avg = mean(movie,4,'omitnan');
+                    avg(~mask) = NaN;
+                    for iPlane = 1:size(avg,3)
+                        QC.(name).planes(iPlane).meanImage = avg(:,:,iPlane);
                     end
                 end
 
-                % Learn labels on detection frames and extract from the measurement movie.
+                clear movie
+                stage = "filtering and detrending";
+                STACK = prepareMovies(STACK,SET);
+
+                % Project the selected planes before segmentation.
+                if SET.max_compression && numel(SET.max_compression_planes)>1
+                    [STACK,SET] = compressPlanes(STACK,SET);
+                end
+
+                % Identify ROIs and extract their fluorescence from the same stack.
                 stage = "segmentation";
                 rng(SET.RandomSeed,'twister');
-                [STACK_proc, Segmentation] = segmentImages(detection, SET, STACK, QC);
-                clear detection
+                [STACK_proc, Segmentation] = segmentImages(STACK, SET);
 
                 % Save measured region F and its actual F0 before normalizing either movie.
                 stage = "baseline and normalization";
@@ -430,7 +410,7 @@ for iAni = 1:size(curr.dir.all, 1)
                 % PCA embedding of frames across trials
                 % ---------------------------------------------------------
                 stage = "frame PCA";
-                PCA = embedTrialFrames(Segmentation,SET,QC);
+                PCA = embedTrialFrames(Segmentation,SET);
                 if SET.FramePCA && ~strcmp(PCA.status,'complete')
                     warning('CRAPview:framePCA','Skipping PCA for %s: %s',animal,PCA.status);
                 end
@@ -453,13 +433,12 @@ for iAni = 1:size(curr.dir.all, 1)
                 curr.dir.all(iAni).name, ME.message, ME.identifier);
         end%try
         batch(end+1,:) = {string(animal),status,stage,message};
-        writetable(batch,batchFile);
     end%if animal
 end%iAni
 
-% Point to the ledger even when a previous MATLAB session suppressed warnings.
-fprintf('CRAPview: %d complete, %d skipped, %d failed. Batch summary: %s\n', ...
-    nnz(batch.status=="complete"),nnz(batch.status=="skipped"),nnz(batch.status=="failed"),batchFile);
+% Report batch totals in the Command Window.
+fprintf('CRAPview: %d complete, %d skipped, %d failed.\n', ...
+    nnz(batch.status=="complete"),nnz(batch.status=="skipped"),nnz(batch.status=="failed"));
 
 %% Subfunctions
 %% ------------------------------------------------------------------------
@@ -529,8 +508,8 @@ function revision = gitRevision(folder)
 revision = '';
 try
     args = java.util.ArrayList();
-    for arg = {'git','-C',folder,'rev-parse','--verify','HEAD'}
-        args.add(java.lang.String(arg{1}));
+    for iArgument = {'git','-C',folder,'rev-parse','--verify','HEAD'}
+        args.add(java.lang.String(iArgument{1}));
     end
     builder = java.lang.ProcessBuilder(args);
     builder.redirectErrorStream(true);
@@ -554,188 +533,44 @@ md.update(fread(fid,Inf,'*int8'));
 digest = lower(reshape(dec2hex(typecast(md.digest(),'uint8'),2)',1,[]));
 end
 
-function [QC,SET] = assessFrames(raw,registered,QC,SET)
-% Use one fixed image per plane for comparable before/after correlations.
-for k = 1:SET.N
-    name = SET.trial_names_clean{k};
-    input = raw.(name);
-    movie = registered.(name);
-    if isfield(QC.(name),'validMask')
-        SET.STACK_mask.(name) = SET.STACK_mask.(name) & QC.(name).validMask;
-    end
-    masks = SET.STACK_mask.(name);
-    refs = median(movie,4,'omitnan');
-    for z = 1:size(movie,3)
-        mask = masks(:,:,z);
-        % A Z translation can leave an outer plane with no common support.
-        % Preserve its timing and mark all of its frames as unavailable.
-        % Retain native frame numbers and timing, including long intervals.
-        times = SET.(name).relativeTime(z,:)';
-        dt = [NaN; diff(times)];
-        assert(all(isfinite(times)) && all(dt(2:end)>0),'Invalid acquisition times in %s.',name);
-        gap = dt > SET.GapFactor * median(dt,'omitnan');
-        n = numel(times);
-        affine = zeros(n,1);
-        nonrigid = zeros(n,1);
-        if isfield(QC.(name),'registration')
-            r = QC.(name).registration(z);
-            if isfield(r,'affineDisplacement'), affine = r.affineDisplacement; end
-            if isfield(r,'nonrigidDisplacement'), nonrigid = r.nonrigidDisplacement; end
+function STACK = prepareMovies(STACK,SET)
+% Filter the complete acquisition independently for each trial and plane.
+for iTrial = 1:SET.N
+    name = SET.trial_names_clean{iTrial};
+    n = size(STACK.(name),4);
+    for iPlane = 1:size(STACK.(name),3)
+        mask = SET.STACK_mask.(name)(:,:,iPlane);
+        if ~any(mask(:))
+            STACK.(name)(:,:,iPlane,:) = NaN;
+            continue
         end
-
-        % Score raw clipping, whole-field brightness, registration and possible
-        % out-of-plane displacement. Neighbor preference is a review flag.
-        saturated = zeros(n,1);
-        brightness = nan(n,1);
-        before = nan(n,1);
-        after = nan(n,1);
-        axial = false(n,1);
-        for f = 1:n
-            image = input(:,:,z,f);
-            saturated(f) = nnz(image >= SET.(name).saturationLevel)/numel(image);
-            brightness(f) = median(image(:),'omitnan');
-            aligned = movie(:,:,z,f);
-            before(f) = imageCorrelation(image,refs(:,:,z),mask);
-            after(f) = imageCorrelation(aligned,refs(:,:,z),mask);
-            for neighbor = intersect([z-1 z+1],1:size(movie,3))
-                common = mask & masks(:,:,neighbor);
-                own = imageCorrelation(aligned,refs(:,:,z),common);
-                other = imageCorrelation(aligned,refs(:,:,neighbor),common);
-                axial(f) = axial(f) || other > own + SET.AxialCorrelationMargin;
-            end
-        end
-        % Flag unusually bright frames for review. Trigger proximity alone
-        % does not exclude a response. Explicit frame overrides are per trial.
-        center = median(brightness,'omitnan');
-        spread = median(abs(brightness-center),'omitnan');
-        flash = brightness > center + SET.FlashMAD * max(1.4826*spread,eps(max(1,abs(center))));
-        reason = strings(n,1);
-        reason(saturated > SET.MaxSaturatedFraction) = "saturation ";
-        if SET.ExcludeBrightFrames, reason(flash) = reason(flash) + "flash "; end
-        motion = max(affine,nonrigid);
-        badMotion = motion > SET.MaxMotionPx | after < SET.MinReferenceCorrelation;
-        reason(badMotion) = reason(badMotion) + "motion ";
-        if ~any(mask(:)), reason(:) = reason(:) + "no_support "; end
-        if isfield(SET.ExcludeFrames,name)
-            excludedFrames = SET.ExcludeFrames.(name);
-            validateattributes(excludedFrames,{'numeric'},{'integer','positive','<=',n});
-            reason(excludedFrames) = reason(excludedFrames) + "manual ";
-        end
-        edges = SET.(name).voltage.([SET.TriggerEdge 'Time']) + SET.VoltageTimeOffset;
-        trigger = NaN;
-        if numel(edges)>=SET.TriggerIndex, trigger = edges(SET.TriggerIndex); end
-        Q = table((1:n)',times,SET.(name).absoluteTime(z,:)',dt,gap,saturated,brightness,flash, ...
-            affine,nonrigid,motion,before,after,axial,times-trigger,strlength(reason)>0,strtrim(reason), ...
-            'VariableNames',{'frame','time_s','absolute_time_s','interval_s','gap_before','saturated_fraction', ...
-            'median_intensity','bright_frame_review','affine_max_corner_px','nonrigid_max_patch_voxels', ...
-            'motion_score','corr_before','corr_after','axial_drift_review','trigger_relative_s','excluded','reason'});
-        QC.(name).planes(z).frames = Q;
-        QC.(name).planes(z).reference = refs(:,:,z);
-        good = ~Q.excluded;
-        if ~any(good)
-            warning('CRAPview:noGoodFrames','No usable frames in %s plane %d.',name,z);
-        end
-        if any(good)
-            meanImage = mean(movie(:,:,z,good),4,'omitnan');
-        else
-            meanImage = nan(size(mask));
-        end
-        meanImage(~mask) = NaN;
-        QC.(name).planes(z).meanImage = meanImage;
-    end
-    % Retain the mean of the registered maximum projection for slice QC.
-    if SET.max_compression && numel(SET.max_compression_planes)>1
-        planes = reshape(SET.max_compression_planes,1,[]);
-        good = true(1,size(movie,4));
-        for z = planes, good = good & ~QC.(name).planes(z).frames.excluded'; end
-        if any(good)
-            projected = max(movie(:,:,planes,good),[],3);
-            QC.(name).projectedMean = mean(projected,4,'omitnan');
-        else
-            QC.(name).projectedMean = nan(size(movie,1),size(movie,2));
-        end
-        outside = ~all(masks(:,:,planes),3);
-        QC.(name).projectedMean(outside) = NaN;
-    end
-end
-end
-
-function score = imageCorrelation(a,b,mask)
-% Pearson correlation on common measured pixels. Flat images have no score.
-mask = mask & isfinite(a) & isfinite(b);
-x = a(mask); y = b(mask);
-x = x-mean(x); y = y-mean(y);
-score = NaN;
-if numel(x)>=2
-    denominator = norm(x)*norm(y);
-    if denominator>0, score = dot(x,y)/denominator; end
-end
-end
-
-function [detection,measurement,QC] = prepareMovies(registered,SET,QC)
-% Filter contiguous runs independently. Keep excluded acquisition slots as NaN.
-detection = registered;
-measurement = registered;
-for k = 1:SET.N
-    name = SET.trial_names_clean{k};
-    for z = 1:size(registered.(name),3)
-        q = QC.(name).planes(z).frames;
-        mask = SET.STACK_mask.(name)(:,:,z);
-        good = ~q.excluded;
-        first = find(good & ([true; ~good(1:end-1)] | q.gap_before));
-        last = find(good & ([~good(2:end); true] | [q.gap_before(2:end);false]));
-        q.short_run_operations = strings(height(q),1);
-        % A long acquisition interval splits runs at the first following frame.
-        % A rejected acquisition slot splits them on both sides.
-        % Extend measured borders for spatial smoothing only. Invalid pixels
-        % are removed again before detection and measurement.
+        % Extend the valid spatial support for filtering, then restore its mask.
+        original = STACK.(name)(:,:,iPlane,:);
+        padded = reshape(original,[],n);
         [~,nearest] = bwdist(mask);
-        det = nan(size(registered.(name),1),size(registered.(name),2),1,height(q));
-        meas = det;
-        for run = 1:numel(first)
-            frames = first(run):last(run);
-            original = registered.(name)(:,:,z,frames);
-            local = SET;
-            local.N = 1;
-            local.trial_names_clean = {name};
-            local.(name).relativeTime = q.time_s(frames)';
-            local.STACK_mask.(name) = mask;
-            % Reuse the pipeline filters. Too-short runs retain their samples
-            % and record exactly which requested operations could not be fit.
-            [local,note] = shortRunSettings(local,numel(frames));
-            q.short_run_operations(frames) = note;
-            padded = reshape(original,[],numel(frames));
-            padded(~mask(:),:) = padded(nearest(~mask),:);
-            part.(name) = reshape(padded,size(original));
-            part = filterImages(part,local);
-            part = detrendMovies(part,local);
-            det(:,:,1,frames) = part.(name);
+        padded(~mask(:),:) = padded(nearest(~mask),:);
+        local = shortTrialSettings(SET,n);
+        local.N = 1;
+        local.trial_names_clean = {name};
+        local.(name).relativeTime = SET.(name).relativeTime(iPlane,:);
+        local.STACK_mask.(name) = mask;
 
-            % Apply the same temporal filter and detrend to registered fluorescence.
-            part.(name) = reshape(padded,size(original));
-            local.SmoothData_spat_type = [];
-            part = filterImages(part,local);
-            part = detrendMovies(part,local);
-            meas(:,:,1,frames) = part.(name);
-        end
-        det = reshape(det,[],height(q));
-        meas = reshape(meas,[],height(q));
-        det(~mask(:),:) = 0;
-        meas(~mask(:),:) = NaN;
-        detection.(name)(:,:,z,:) = reshape(det,size(registered.(name),1),[],1,height(q));
-        measurement.(name)(:,:,z,:) = reshape(meas,size(registered.(name),1),[],1,height(q));
-        QC.(name).planes(z).frames = q;
+        % Apply the configured filters once and restore invalid pixels to NaN.
+        part.(name) = reshape(padded,size(original));
+        part = filterImages(part,local);
+        part = detrendMovies(part,local);
+        pixels = reshape(part.(name),[],n);
+        pixels(~mask(:),:) = NaN;
+        STACK.(name)(:,:,iPlane,:) = reshape(pixels,size(original));
     end
 end
 end
 
-function [S,note] = shortRunSettings(S,n)
+function S = shortTrialSettings(S,n)
 % filtfilt requires more than three filter orders. Polynomial fits require
 % more samples than the degree, and biexponential fitting needs four samples.
-note = "";
 if strcmp(S.SmoothData_temp_type,'butter') && n <= 3*S.SmoothData_temp(1)
     S.SmoothData_temp_type = [];
-    note = "lowpass ";
 end
 setting = S.Detrend;
 if isnumeric(setting)
@@ -747,49 +582,14 @@ elseif startsWith(setting,'hpf-')
 else
     tooShort = strcmp(setting,'exp2') && n<4;
 end
-if tooShort, S.Detrend = 0; note = note + "detrending"; end
-note = strtrim(note);
-end
-
-function QC = projectQuality(QC,SET)
-% Preserve native scores in results.mat and combine only selected planes.
-for k = 1:SET.N
-    name = SET.trial_names_clean{k};
-    native = QC.(name).planes;
-    QC.(name).nativePlanes = native;
-    planes = reshape(SET.max_compression_planes,1,[]);
-    q = native(planes(1)).frames;
-    q.time_s = SET.(name).relativeTime(:);
-    q.absolute_time_s = SET.(name).absoluteTime(:);
-    q.interval_s = [NaN;diff(q.time_s)];
-    delta = q.time_s - native(planes(1)).frames.time_s;
-    q.trigger_relative_s = q.trigger_relative_s + delta;
-    % Use worst-case quality across contributing planes. Keep native
-    % brightness and per-plane measurements available in nativePlanes.
-    for z = planes(2:end)
-        b = native(z).frames;
-        for col = ["excluded","gap_before","axial_drift_review","bright_frame_review"]
-            q.(col) = q.(col) | b.(col);
-        end
-        for col = ["saturated_fraction","motion_score","affine_max_corner_px","nonrigid_max_patch_voxels","median_intensity"]
-            q.(col) = max(q.(col),b.(col));
-        end
-        for col = ["corr_before","corr_after"], q.(col) = min(q.(col),b.(col)); end
-        q.reason = strtrim(q.reason+" "+b.reason);
-        q.short_run_operations = strtrim(q.short_run_operations+" "+b.short_run_operations);
-    end
-    QC.(name).planes = struct('frames',q,'reference',max(cat(3,native(planes).reference),[],3), ...
-        'meanImage',QC.(name).projectedMean);
-    QC.(name).projectedSourcePlanes = QC.(name).sourcePlanes(planes);
-
-end
+if tooShort, S.Detrend = 0; end
 end
 
 function [STACK,processed,seg,QC,SET] = normalizeTrials(STACK,processed,seg,QC,SET)
 % Select baseline samples per plane. Retain the fluorescence and denominator
 % used for each ROI before overwriting the two movie arrays with dF/F.
-for k = 1:SET.N
-    name = SET.trial_names_clean{k};
+for iTrial = 1:SET.N
+    name = SET.trial_names_clean{iTrial};
     value = SET.dFF_value;
     n = size(STACK.(name),4);
     fallback = false;
@@ -812,49 +612,50 @@ for k = 1:SET.N
     end
     SET.(name).dFF_value = value;
     SET.(name).baseline_fallback = fallback;
-    for z = 1:size(STACK.(name),3)
-        q = QC.(name).planes(z).frames;
-        keep = ~q.excluded;
-        if strcmp(SET.dFF_type,'window')
-            keep = keep & q.frame>=value(1) & q.frame<=value(2);
-        elseif strcmp(SET.dFF_type,'trigger')
-            assert(any(isfinite(q.trigger_relative_s)),'Missing selected trigger for %s.',name);
-            keep = keep & q.trigger_relative_s>=value(1) & q.trigger_relative_s<=value(2);
+    for iPlane = 1:size(STACK.(name),3)
+        times = SET.(name).relativeTime(iPlane,:)';
+        edges = SET.(name).voltage.([SET.TriggerEdge 'Time']);
+        relative = nan(size(times));
+        if numel(edges)>=SET.TriggerIndex
+            relative = times - (edges(SET.TriggerIndex) + SET.VoltageTimeOffset);
         end
-        q.baseline_frame = keep;
-        QC.(name).planes(z).frames = q;
+        QC.(name).planes(iPlane).triggerRelativeTime = relative;
+        keep = true(n,1);
+        if strcmp(SET.dFF_type,'window')
+            keep = (1:n)' >= value(1) & (1:n)' <= value(2);
+        elseif strcmp(SET.dFF_type,'trigger')
+            assert(any(isfinite(relative)),'Missing selected trigger for %s.',name);
+            keep = relative>=value(1) & relative<=value(2);
+        end
         % Normalize pixels using only finite samples in the selected interval.
-        mask = SET.STACK_mask.(name)(:,:,z);
-        pixels = reshape(STACK.(name)(:,:,z,:),[],n);
-        pixels(:,q.excluded) = NaN;
+        mask = SET.STACK_mask.(name)(:,:,iPlane);
+        pixels = reshape(STACK.(name)(:,:,iPlane,:),[],n);
         [f0,~,usable,floorValue] = baselineValues(pixels,keep,SET);
         validMap = reshape(usable,size(mask)) & mask;
-        QC.(name).planes(z).pixelBaselineValid = validMap;
-        QC.(name).planes(z).pixelBaselineSummary = struct('valid',nnz(validMap), ...
+        QC.(name).planes(iPlane).pixelBaselineValid = validMap;
+        QC.(name).planes(iPlane).pixelBaselineSummary = struct('valid',nnz(validMap), ...
             'invalid',nnz(mask & ~validMap),'minimum_abs_F0',floorValue,'candidate_frames',nnz(keep),'window_fallback',fallback);
         denom = abs(f0); denom(~usable) = NaN;
         dff = (pixels-f0)./denom;
-        STACK.(name)(:,:,z,:) = reshape(dff,size(mask,1),size(mask,2),1,n);
+        STACK.(name)(:,:,iPlane,:) = reshape(dff,size(mask,1),size(mask,2),1,n);
 
         % Normalize each segmentation time course using its own fluorescence baseline.
-        summary = seg.(name)(z).summary_stats;
+        summary = seg.(name)(iPlane).summary_stats;
         if isscalar(summary) && isfield(summary,'avgTCs')
             traces = summary.avgTCs;
-            assert(size(traces,2)==n,'Segmentation frame count differs for %s plane %d.',name,z);
-            traces(:,q.excluded) = NaN;
+            assert(size(traces,2)==n,'Segmentation frame count differs for %s plane %d.',name,iPlane);
             [segF0,~,segUsable] = baselineValues(traces,keep,SET,floorValue);
             denominator = abs(segF0);
             denominator(~segUsable) = NaN;
             summary.avgTCs = (traces-segF0)./denominator;
             summary.avgTCs_F0 = segF0;
-            seg.(name)(z).summary_stats = summary;
+            seg.(name)(iPlane).summary_stats = summary;
         end
 
         % Collect measured region means for normalization.
-        labels = seg.(name)(z).pockets_labeled;
+        labels = seg.(name)(iPlane).pockets_labeled;
         ids = unique(labels(:));
-        regionMovie = reshape(processed.(name)(:,:,z,:),[],n);
-        regionMovie(:,q.excluded) = NaN;
+        regionMovie = reshape(processed.(name)(:,:,iPlane,:),[],n);
         F = nan(numel(ids),n);
         measuredPixels = find(mask);
         [presentIDs,first] = unique(labels(measuredPixels));
@@ -867,10 +668,10 @@ for k = 1:SET.N
         [~,idx] = ismember(labels(:),ids);
         regionMovie = regionDff(idx,:);
         regionMovie(~mask(:),:) = NaN;
-        processed.(name)(:,:,z,:) = reshape(regionMovie,size(mask,1),size(mask,2),1,n);
-        QC.(name).planes(z).fluorescence = F;
+        processed.(name)(:,:,iPlane,:) = reshape(regionMovie,size(mask,1),size(mask,2),1,n);
+        QC.(name).planes(iPlane).fluorescence = F;
         low = isfinite(f0) & abs(f0)<=floorValue;
-        QC.(name).planes(z).baselines = table((1:numel(ids))',ids,f0,count,low,usable, ...
+        QC.(name).planes(iPlane).baselines = table((1:numel(ids))',ids,f0,count,low,usable, ...
             repmat(fallback,numel(ids),1),repmat(floorValue,numel(ids),1),'VariableNames',{'trace_row','region_id','F0', ...
             'valid_baseline_frames','low_baseline','usable','window_fallback','minimum_abs_F0'});
     end
@@ -898,9 +699,9 @@ end
 usable = isfinite(f0) & abs(f0)>floorValue & count>=SET.MinBaselineFrames;
 end
 
-function writeSliceQC(q,labels,regions,dff,folder,trialName,plane,planeTitle,cmap)
+function writeSliceQC(q,labels,regions,dff,folder,trialName,plane,planeTitle,cmap,times)
 % Link each anatomical slice and trace row with the same label and slice ID.
-fig = figure('Visible','off','Color','w','Position',[100 100 1200 550]);
+fig = figure('Visible','off','Color','w','Position',[100 100 1200 800]);
 cleanup = onCleanup(@() deleteVideoFigure(fig)); %#ok<NASGU>
 layout = tiledlayout(fig,1,2);
 ax = nexttile(layout);
@@ -909,12 +710,12 @@ hold(ax,'on');
 drawRegionEdges(ax,regionEdges(labels));
 rows = find(regions.region_id>0);
 names = strings(numel(rows),1);
-for j = 1:numel(rows)
-    i = rows(j);
-    roi = labels==regions.region_id(i);
+for iSlice = 1:numel(rows)
+    iRow = rows(iSlice);
+    roi = labels==regions.region_id(iRow);
     [r,c] = find(roi);
-    text(ax,mean(c),mean(r),num2str(regions.region_id(i)),'Color','w');
-    names(j) = sprintf('%d  %s %g',regions.region_id(i),regions.roi_name{i},regions.slice_index(i));
+    text(ax,mean(c),mean(r),num2str(regions.region_id(iRow)),'Color','w');
+    names(iSlice) = sprintf('%d  %s %g',regions.region_id(iRow),regions.roi_name{iRow},regions.slice_index(iRow));
 end
 title(ax,'Registered fluorescence and slice IDs');
 ax = nexttile(layout);
@@ -925,10 +726,10 @@ if ~isempty(rows)
     colormap(ax,cmap);
     set(h,'AlphaData',isfinite(imageData));
     yticks(ax,1:numel(rows)); yticklabels(ax,names);
-    ticks = unique(round(linspace(1,height(q.frames),min(6,height(q.frames)))));
-    t = q.frames.trigger_relative_s;
+    ticks = unique(round(linspace(1,size(dff,2),min(6,size(dff,2)))));
+    t = q.triggerRelativeTime;
     if all(isnan(t))
-        t = q.frames.time_s;
+        t = times;
         xlabel(ax,'Acquisition time (s)');
     else
         xlabel(ax,'Time from selected trigger (s)');
@@ -957,15 +758,15 @@ numberOfPlanes = firstSequence.getElementsByTagName('Frame').getLength();
 relativeTime = zeros(numberOfPlanes, numberOfCycles);
 absoluteTime = zeros(numberOfPlanes, numberOfCycles);
 
-for cycleIndex = 1:numberOfCycles
-    sequence = sequences.item(cycleIndex - 1);
+for iCycle = 1:numberOfCycles
+    sequence = sequences.item(iCycle - 1);
     frames = sequence.getElementsByTagName('Frame');
 
-    for frameIndex = 1:numberOfPlanes
-        frame = frames.item(frameIndex - 1);
-        relativeTime(frameIndex, cycleIndex) = ...
+    for iFrame = 1:numberOfPlanes
+        frame = frames.item(iFrame - 1);
+        relativeTime(iFrame, iCycle) = ...
             str2double(char(frame.getAttribute('relativeTime')));
-        absoluteTime(frameIndex, cycleIndex) = ...
+        absoluteTime(iFrame, iCycle) = ...
             str2double(char(frame.getAttribute('absoluteTime')));
     end
 end
@@ -989,15 +790,15 @@ numberOfCycles = double(sequences.getLength());
 channelPattern = ['(^|_)', regexptranslate('escape', char(SET.Channel)), '(?=_|\.|$)'];
 STACK = [];
 
-for cycleIndex = 1:numberOfCycles
-    sequence = sequences.item(cycleIndex-1);
+for iCycle = 1:numberOfCycles
+    sequence = sequences.item(iCycle-1);
     frames = sequence.getElementsByTagName('Frame');
-    for frameIndex = 1:double(frames.getLength())
-        frame = frames.item(frameIndex-1);
+    for iFrame = 1:double(frames.getLength())
+        frame = frames.item(iFrame-1);
         files = frame.getElementsByTagName('File');
         selectedFile = [];
-        for fileIndex = 1:double(files.getLength())
-            file = files.item(fileIndex-1);
+        for iFile = 1:double(files.getLength())
+            file = files.item(iFile-1);
             filename = char(file.getAttribute('filename'));
             if ~isempty(regexpi(filename, channelPattern, 'once'))
                 assert(isempty(selectedFile), ...
@@ -1007,7 +808,7 @@ for cycleIndex = 1:numberOfCycles
         end
         assert(~isempty(selectedFile), ...
             'Channel %s is missing from XML filenames at cycle %d, frame %d.', ...
-            SET.Channel, cycleIndex, frameIndex);
+            SET.Channel, iCycle, iFrame);
         filename = char(selectedFile.getAttribute('filename'));
         page = str2double(char(selectedFile.getAttribute('page')));
         assert(isfinite(page) && page >= 1 && page == fix(page), ...
@@ -1015,13 +816,9 @@ for cycleIndex = 1:numberOfCycles
         image = imread(fullfile(trialFolder,filename),page);
         snapshot = double(image);
         if isempty(STACK)
-            % Preserve source identity and the stored clipping level for frame QC.
+            % Preserve source identity for the trial export.
             SET.(trialName).sourceXML = xmlFile;
             SET.(trialName).sourceTIFF = {};
-            ceiling = SET.SaturationLevel;
-            if isempty(ceiling) && isinteger(image), ceiling = double(intmax(class(image))); end
-            if isempty(ceiling), ceiling = Inf; end
-            SET.(trialName).saturationLevel = ceiling;
             SET.(trialName).xy = [size(snapshot,1), size(snapshot,2)];
             SET.(trialName).channel = SET.Channel;
             STACK = nan([SET.(trialName).xy, SET.(trialName).n_planes, ...
@@ -1031,9 +828,9 @@ for cycleIndex = 1:numberOfCycles
             SET.(trialName).sourceTIFF{end+1} = filename;
         end
         if numberOfCycles == 1
-            STACK(:,:,1,frameIndex) = snapshot;
+            STACK(:,:,1,iFrame) = snapshot;
         else
-            STACK(:,:,frameIndex,cycleIndex) = snapshot;
+            STACK(:,:,iFrame,iCycle) = snapshot;
         end
     end
 end
@@ -1096,8 +893,7 @@ function [STACK,QC] = affinecorrectMotion(STACK, SET, QC)
 % as in correctMotion. Shared modes intersect these masks across trials.
 % Without STACK_mask, registration uses the full image.
 %
-% Matches the supplied algorithm: multimodal metric, affine fits, parfor
-% over frames, and cubic resampling of the CURRENT corrected frames.
+% Fit each frame with a multimodal metric and resample using cubic interpolation.
 % Uncovered pixels are zero-filled and participate in subsequent medians.
 % No intensity normalization or clipping is applied.
 % QC stores the common measured support after all affine warps.
@@ -1122,19 +918,19 @@ end
 spatial = zeros(numel(names),3);
 
 % Check trial dimensions and allocate outputs.
-for k = 1:numel(names)
-    name = names{k};
+for iTrial = 1:SET.N
+    name = names{iTrial};
     movie = input.(name);
     assert(isnumeric(movie) && isreal(movie) && ndims(movie) == 4 && ...
         size(movie,4) >= 2, 'Expected [rows, columns, planes, time] with at least two frames for %s.',name);
-    spatial(k,:) = [size(movie,1),size(movie,2),size(movie,3)];
+    spatial(iTrial,:) = [size(movie,1),size(movie,2),size(movie,3)];
     if ~isfield(SET,'STACK_mask')
-        inputMask.(name) = true(spatial(k,:));
+        inputMask.(name) = true(spatial(iTrial,:));
     end
     assert(isfield(inputMask,name), 'Missing STACK_mask for %s.',name);
     mask = inputMask.(name);
     assert(islogical(mask) && ndims(mask) <= 3 && ...
-        isequal([size(mask,1),size(mask,2),size(mask,3)],spatial(k,:)), ...
+        isequal([size(mask,1),size(mask,2),size(mask,3)],spatial(iTrial,:)), ...
         'Expected a spatial logical common mask for %s.',name);
     STACK.(name) = double(movie);
 end
@@ -1148,24 +944,24 @@ else
     groups = {1:numel(names)};
 end
 
-for g = 1:numel(groups)
-    group = groups{g};
+for iGroup = 1:numel(groups)
+    group = groups{iGroup};
     first = group(1);
     common = inputMask.(names{first});
-    for k = group(2:end)
-        common = common & inputMask.(names{k});
+    for iTrial = group(2:end)
+        common = common & inputMask.(names{iTrial});
     end
 
-    for plane = 1:spatial(first,3)
+    for iPlane = 1:spatial(first,3)
         % Use the rectangular mask intersection, matching correctMotion.
-        footprint = common(:,:,plane);
+        footprint = common(:,:,iPlane);
         rows = find(any(footprint,2));
         cols = find(any(footprint,1));
         assert(~isempty(rows) && ~isempty(cols) && ...
             all(diff(rows)==1) && all(diff(cols)==1) && ...
             all(all(footprint(rows,cols))), ...
             'Expected a nonempty rectangular mask intersection for %s, plane %d.', ...
-            names{first},plane);
+            names{first},iPlane);
 
         if strcmp(mode,'together')
             batches = {group};
@@ -1173,34 +969,31 @@ for g = 1:numel(groups)
             batches = num2cell(group);
         end
         reference = [];
-        for b = 1:numel(batches)
-            members = batches{b};
+        for iBatch = 1:numel(batches)
+            members = batches{iBatch};
             crops = cell(size(members));
-            for j = 1:numel(members)
-                crop = input.(names{members(j)})(rows,cols,plane,:);
+            for iMember = 1:numel(members)
+                crop = input.(names{members(iMember)})(rows,cols,iPlane,:);
                 assert(all(isfinite(crop(:))), ...
-                    'Nonfinite input inside the crop for %s.',names{members(j)});
-                crops{j} = double(crop);
+                    'Nonfinite input inside the crop for %s.',names{members(iMember)});
+                crops{iMember} = double(crop);
             end
             counts = cellfun(@(x) size(x,4),crops);
-            [aligned,support,displacement,fixed,cornersAfter] = registerAffineCrop(cat(4,crops{:}),SET,reference);
+            [aligned,support] = registerAffineCrop(cat(4,crops{:}),SET,reference);
 
             % Restore original trial boundaries and spatial coordinates.
             offset = 0;
-            for j = 1:numel(members)
-                name = names{members(j)};
-                frames = offset + (1:counts(j));
-                STACK.(name)(rows,cols,plane,:) = aligned(:,:,:,frames);
+            for iMember = 1:numel(members)
+                name = names{members(iMember)};
+                frames = offset + (1:counts(iMember));
+                STACK.(name)(rows,cols,iPlane,:) = aligned(:,:,:,frames);
                 if ~isfield(QC.(name),'validMask')
-                    QC.(name).validMask = false(spatial(members(j),:));
+                    QC.(name).validMask = false(spatial(members(iMember),:));
                 end
-                QC.(name).validMask(rows,cols,plane) = all(support(:,:,frames),3);
-                QC.(name).registration(plane).affineReference = fixed;
-                QC.(name).registration(plane).affineDisplacement = displacement(frames);
-                QC.(name).registration(plane).affineCornersXY = cornersAfter(:,:,frames);
+                QC.(name).validMask(rows,cols,iPlane) = all(support(:,:,frames),3);
                 offset = frames(end);
             end
-            if strcmp(mode,'template') && b == 1 && numel(batches) > 1
+            if strcmp(mode,'template') && iBatch == 1 && numel(batches) > 1
                 reference = median(aligned,4);
             end
         end
@@ -1208,8 +1001,8 @@ for g = 1:numel(groups)
 end
 end % FCN:affinecorrectMotion
 
-function [aligned,support,displacement,fixed,positions] = registerAffineCrop(movie,SET,reference)
-% Preserve the user's iterative cubic-warp algorithm on one plane.
+function [aligned,support] = registerAffineCrop(movie,SET,reference)
+% Apply iterative cubic warps to one plane.
 nr = size(movie,1);
 nc = size(movie,2);
 nt = size(movie,4);
@@ -1225,11 +1018,7 @@ optimizer.MaximumIterations = SET.Affine_maxIter;
 outputView = imref2d([nr nc]);
 [outX,outY] = meshgrid(1:nc,1:nr);
 support = true(nr,nc,nt);
-% Track corner positions through successive transforms to measure total motion.
-corners = [1 1; nc 1; 1 nr; nc nr];
-positions = repmat(corners,1,1,nt);
-
-for iteration = 1:SET.Affine_iter
+for iIteration = 1:SET.Affine_iter
     if isempty(reference)
         fixed = median(aligned,3);
     else
@@ -1240,20 +1029,18 @@ for iteration = 1:SET.Affine_iter
     current = aligned;
     next = zeros(size(current),'double');
     tformType = SET.Affine_tformType;
-    parfor frameIndex = 1:nt
-        tform = imregtform(current(:,:,frameIndex),fixed, ...
+    parfor iFrame = 1:nt
+        tform = imregtform(current(:,:,iFrame),fixed, ...
             tformType,optimizer,metric);
         % Cubic interpolation needs neighboring samples. Check the source footprint
         % of each output location so repeated identity warps retain the full image.
         [srcX,srcY] = transformPointsInverse(tform,outX,outY);
-        support(:,:,frameIndex) = cubicSupport(support(:,:,frameIndex),srcX,srcY);
-        positions(:,:,frameIndex) = transformPointsForward(tform,positions(:,:,frameIndex));
-        next(:,:,frameIndex) = imwarp(current(:,:,frameIndex), ...
+        support(:,:,iFrame) = cubicSupport(support(:,:,iFrame),srcX,srcY);
+        next(:,:,iFrame) = imwarp(current(:,:,iFrame), ...
             tform,"cubic","OutputView",outputView,"FillValues",0);
     end
     aligned = next;
 end
-displacement = reshape(max(vecnorm(positions-corners,2,2),[],1),[],1);
 aligned = reshape(aligned,nr,nc,1,nt);
 end % FCN:registerAffineCrop
 
@@ -1266,10 +1053,10 @@ function valid = cubicSupport(previous,x,y)
 x0 = floor(x); y0 = floor(y);
 wholeX = x==x0; wholeY = y==y0;
 valid = isfinite(x) & isfinite(y);
-for dy = -1:2
-    for dx = -1:2
-        needed = (~wholeX | dx==0) & (~wholeY | dy==0);
-        xx = x0+dx; yy = y0+dy;
+for iRowOffset = -1:2
+    for iColOffset = -1:2
+        needed = (~wholeX | iColOffset==0) & (~wholeY | iRowOffset==0);
+        xx = x0+iColOffset; yy = y0+iRowOffset;
         inside = xx>=1 & xx<=nc & yy>=1 & yy<=nr;
         valid(needed & ~inside) = false;
         use = needed & inside;
@@ -1293,15 +1080,15 @@ inputMask = SET.STACK_mask;
 spatial = zeros(numel(names),3);
 
 % Check trial dimensions and allocate the output stacks
-for k = 1:numel(names)
-    name = names{k};
+for iTrial = 1:SET.N
+    name = names{iTrial};
     movie = input.(name);
     mask = inputMask.(name);
-    spatial(k,:) = [size(movie,1), size(movie,2), size(movie,3)];
+    spatial(iTrial,:) = [size(movie,1), size(movie,2), size(movie,3)];
     assert(isnumeric(movie) && isreal(movie) && ndims(movie) == 4 && ...
         size(movie,4) >= 2, 'Expected at least two frames for %s.',name);
     assert(islogical(mask) && ndims(mask) <= 3 && ...
-        isequal([size(mask,1),size(mask,2),size(mask,3)],spatial(k,:)), ...
+        isequal([size(mask,1),size(mask,2),size(mask,3)],spatial(iTrial,:)), ...
         'Expected a spatial logical common mask for %s.',name);
     STACK.(name) = double(movie);
 end
@@ -1315,13 +1102,13 @@ else
     groups = {1:numel(names)};
 end
 
-for g = 1:numel(groups)
-    group = groups{g};
+for iGroup = 1:numel(groups)
+    group = groups{iGroup};
     first = group(1);
     % Intersect the rigid masks across trials in this group
     common = inputMask.(names{first});
-    for k = group(2:end)
-        common = common & inputMask.(names{k});
+    for iTrial = group(2:end)
+        common = common & inputMask.(names{iTrial});
     end
     % Register each Z-plane independently in XY, or register the full 3D volume
     if use2D
@@ -1330,8 +1117,8 @@ for g = 1:numel(groups)
         planeGroups = {1:spatial(first,3)};
     end
 
-    for p = 1:numel(planeGroups)
-        planes = planeGroups{p};
+    for iPlaneGroup = 1:numel(planeGroups)
+        planes = planeGroups{iPlaneGroup};
         % Find the common rectangular crop for these planes
         footprint = all(common(:,:,planes),3);
         rows = find(any(footprint,2));
@@ -1348,20 +1135,20 @@ for g = 1:numel(groups)
             batches = num2cell(group);
         end
         reference = [];
-        for b = 1:numel(batches)
-            members = batches{b};
+        for iBatch = 1:numel(batches)
+            members = batches{iBatch};
             crops = cell(size(members));
-            for j = 1:numel(members)
-                crop = input.(names{members(j)})(rows,cols,planes,:);
-                assert(all(isfinite(crop(:))), 'Nonfinite input inside the crop for %s.',names{members(j)});
-                crops{j} = double(crop);
+            for iMember = 1:numel(members)
+                crop = input.(names{members(iMember)})(rows,cols,planes,:);
+                assert(all(isfinite(crop(:))), 'Nonfinite input inside the crop for %s.',names{members(iMember)});
+                crops{iMember} = double(crop);
             end
             counts = cellfun(@(x) size(x,4),crops);
-            [aligned,shifts,fixed] = registerCrop(cat(4,crops{:}),SET,reference);
+            [aligned,shifts] = registerCrop(cat(4,crops{:}),SET,reference);
             offset = 0;
-            for j = 1:numel(members)
-                name = names{members(j)};
-                frames = offset + (1:counts(j));
+            for iMember = 1:numel(members)
+                name = names{members(iMember)};
+                frames = offset + (1:counts(iMember));
                 offset = frames(end);
                 % Write the corrected crop back at its original coordinates
                 STACK.(name)(rows,cols,planes,:) = aligned(:,:,:,frames);
@@ -1369,17 +1156,15 @@ for g = 1:numel(groups)
                 % on each axis, rounding fractional displacements outwards.
                 dim = 2 + (numel(planes)>1);
                 axisShift = zeros(numel(frames),dim);
-                motion = zeros(numel(frames),1);
-                for f = 1:numel(frames)
-                    patch = shifts(frames(f)).shifts;
-                    if isfield(shifts,'shifts_up') && ~isempty(shifts(frames(f)).shifts_up)
-                        patch = shifts(frames(f)).shifts_up;
+                for iFrame = 1:numel(frames)
+                    patch = shifts(frames(iFrame)).shifts;
+                    if isfield(shifts,'shifts_up') && ~isempty(shifts(frames(iFrame)).shifts_up)
+                        patch = shifts(frames(iFrame)).shifts_up;
                     end
                     patch = reshape(double(patch),[],dim);
                     assert(~isempty(patch) && all(isfinite(patch(:))), ...
-                        'Nonfinite registration displacement in %s, frame %d.',name,f);
-                    axisShift(f,:) = max(abs(patch),[],1);
-                    motion(f) = max(vecnorm(patch,2,2));
+                        'Nonfinite registration displacement in %s, frame %d.',name,iFrame);
+                    axisShift(iFrame,:) = max(abs(patch),[],1);
                 end
                 margin = ceil(max(axisShift,[],1));
                 if ~isfield(QC.(name),'validMask'), QC.(name).validMask = inputMask.(name); end
@@ -1390,17 +1175,9 @@ for g = 1:numel(groups)
                 idx = arrayfun(@(m,n) m+(1:n),margin,cropShape(1:dim),'UniformOutput',false);
                 valid = cropped(idx{:});
                 QC.(name).validMask(rows,cols,planes) = valid;
-                % Keep signed native patch vectors once per plane group as
-                % returned by NoRMCorre, alongside the compact frame metrics.
-                QC.(name).registration(planes(1)).nonrigidPatchShifts = {shifts(frames).shifts};
-                QC.(name).registration(planes(1)).registeredPlanes = planes;
-                for z = 1:numel(planes)
-                    QC.(name).registration(planes(z)).nonrigidReference = fixed(:,:,z);
-                    QC.(name).registration(planes(z)).nonrigidDisplacement = motion;
-                end
             end
 
-            if strcmp(mode,'template') && b == 1 && numel(batches) > 1
+            if strcmp(mode,'template') && iBatch == 1 && numel(batches) > 1
                 % Use the corrected first trial as the template for subsequent trials
                 reference = mean(aligned,4,'omitnan');
             end
@@ -1409,7 +1186,7 @@ for g = 1:numel(groups)
 end
 end % FCN:correctMotion
 
-function [aligned,shifts,fixed] = registerCrop(movie,SET,reference)
+function [aligned,shifts] = registerCrop(movie,SET,reference)
 [nr,nc,nz,nt] = size(movie);
 dim = 3;
 if nz == 1
@@ -1433,7 +1210,7 @@ options = NoRMCorreSetParms(...
     'min_patch_size', SET.NoRMCorre_min_patch_size, ...
     'max_dev',axesParam(SET.NoRMCorre_max_dev,dim));
 % Piecewise-rigid / non-rigid correction
-[aligned,shifts,fixed] = normcorre_batch(movie,options,reference);
+[aligned,shifts] = normcorre_batch(movie,options,reference);
 aligned = reshape(double(aligned),nr,nc,nz,nt);
 end % FCN:registerCrop
 
@@ -1452,8 +1229,8 @@ function STACK = filterImages(STACK, SET)
 smoothingParameters = SET.SmoothData_spat;
 filterType = SET.SmoothData_spat_type;
 
-for trialIndex = 1:numel(SET.trial_names_clean)
-    trialName = SET.trial_names_clean{trialIndex};
+for iTrial = 1:SET.N
+    trialName = SET.trial_names_clean{iTrial};
     if isempty(filterType), continue; end
     trial = double(STACK.(trialName));
     trialSize = size(trial);
@@ -1462,8 +1239,8 @@ for trialIndex = 1:numel(SET.trial_names_clean)
     images = reshape(trial, size(trial, 1), size(trial, 2), []);
     filteredImages = zeros(size(images), 'like', images);
 
-    parfor imageIndex = 1:size(images, 3)
-        image = images(:, :, imageIndex);
+    parfor iImage = 1:size(images, 3)
+        image = images(:, :, iImage);
         switch filterType
             case 'gauss'
                 image = imgaussfilt(image, smoothingParameters);
@@ -1478,7 +1255,7 @@ for trialIndex = 1:numel(SET.trial_names_clean)
                 image = medfilt2(image, ...
                     [smoothingParameters(1) smoothingParameters(1)]);
         end
-        filteredImages(:, :, imageIndex) = image;
+        filteredImages(:, :, iImage) = image;
     end
 
     STACK.(trialName) = reshape(filteredImages, trialSize);
@@ -1557,11 +1334,11 @@ for iTrial = 1:SET.N
     trialName = SET.trial_names_clean{iTrial};
     nFrames = size(STACK.(trialName), 4);
     frames = (1:nFrames)';
-    for plane = 1:size(STACK.(trialName), 3)
+    for iPlane = 1:size(STACK.(trialName), 3)
         % Work in time-by-pixel order within the valid spatial mask.
-        movie = STACK.(trialName)(:,:,plane,:);
+        movie = STACK.(trialName)(:,:,iPlane,:);
         pixels = reshape(movie, [], nFrames);
-        mask = SET.STACK_mask.(trialName)(:,:,plane);
+        mask = SET.STACK_mask.(trialName)(:,:,iPlane);
         if ~any(mask(:)), continue; end
         traces = pixels(mask(:), :)';
         baseline = median(traces, 1, 'omitnan');
@@ -1570,15 +1347,15 @@ for iTrial = 1:SET.N
             case 'exp2'
                 planeTrace = median(traces, 2, 'omitnan');
                 valid = isfinite(planeTrace);
-                assert(nnz(valid) >= 4, 'exp2 requires four valid frames in %s, plane %d.', trialName, plane);
+                assert(nnz(valid) >= 4, 'exp2 requires four valid frames in %s, plane %d.', trialName, iPlane);
                 model = fit(frames(valid), planeTrace(valid), 'exp2');
                 traces = detrend(traces - model(frames), 1, 'omitnan');
             case 'hpf'
-                intervals = diff(SET.(trialName).relativeTime(plane,:));
+                intervals = diff(SET.(trialName).relativeTime(iPlane,:));
                 assert(all(isfinite(intervals) & intervals > 0) && nFrames > 6, ...
-                    'High-pass filtering requires at least seven increasing frame times in %s, plane %d.', trialName, plane);
+                    'High-pass filtering requires at least seven increasing frame times in %s, plane %d.', trialName, iPlane);
                 nyquist = 0.5 / median(intervals);
-                assert(cutoff < nyquist, 'High-pass cutoff must be below %.4g Hz in %s, plane %d.', nyquist, trialName, plane);
+                assert(cutoff < nyquist, 'High-pass cutoff must be below %.4g Hz in %s, plane %d.', nyquist, trialName, iPlane);
                 [b,a] = butter(2, cutoff / nyquist, 'high');
                 traces = filtfilt(b, a, traces);
             otherwise
@@ -1595,24 +1372,24 @@ for iTrial = 1:SET.N
         end
 
         pixels(mask(:), :) = (traces + baseline)';
-        STACK.(trialName)(:,:,plane,:) = reshape(pixels, size(movie));
+        STACK.(trialName)(:,:,iPlane,:) = reshape(pixels, size(movie));
     end
 end
 end % FCN:detrendMovies
 
 %% ------------------------------------------------------------------------
 
-function [STACK_seg, Segmentation] = segmentImages(STACK, SET, measurement, QC)
+function [STACK_seg, Segmentation] = segmentImages(STACK, SET)
 % Segment XY planes in X-by-Y-by-Z-by-time trial arrays.
 % together: segment concatenated trials once per plane, then share labels.
 % template: segment trial 1 once per plane, then share labels.
 % separate: segment each trial and plane independently.
 % Summary statistics always describe the individual trial, before averaging.
-% STACK is the detection movie. Extract region means from measurement and
-% retain the original acquisition slots, including excluded frames.
+% Extract region means from the same preprocessed STACK and
+% retain the original acquisition slots.
 % STACK_seg averages region pixels for BOTH methods, including background (ID 0).
 % Background is averaged separately within each plane and trial.
-% With segmentation disabled, STACK_seg equals measurement. Integer segmented data
+% With segmentation disabled, STACK_seg equals STACK. Integer segmented data
 % are converted to double to preserve fractional region means.
 % Results: Segmentation.(trialName)(planeIndex).pockets_labeled / summary_stats.
 
@@ -1635,17 +1412,17 @@ if segmentationEnabled
     end
     if strcmp(method,'manualSliceSeg'), settings.Colormap = SET.colmap; end
     settingNames = fieldnames(settings);
-    for settingIndex = 1:numel(settingNames)
+    for iSetting = 1:numel(settingNames)
         segmentationArguments(end+1:end+2) = ...
-            {settingNames{settingIndex}, settings.(settingNames{settingIndex})};
+            {settingNames{iSetting}, settings.(settingNames{iSetting})};
     end
 end
 
 % Shared segmentation requires corresponding planes and image sizes.
 spatialSizes = zeros(numberOfTrials, 3);
-for trialIndex = 1:numberOfTrials
-    trial = STACK.(trialNames{trialIndex});
-    spatialSizes(trialIndex, :) = [size(trial, 1), size(trial, 2), size(trial, 3)];
+for iTrial = 1:numberOfTrials
+    trial = STACK.(trialNames{iTrial});
+    spatialSizes(iTrial, :) = [size(trial, 1), size(trial, 2), size(trial, 3)];
 end
 if segmentationEnabled && ~strcmp(mode, 'separate')
     assert(all(all(spatialSizes == spatialSizes(1, :))), ...
@@ -1655,10 +1432,10 @@ else
     trialGroups = num2cell(1:numberOfTrials);
 end
 
-STACK_seg = measurement;
+STACK_seg = STACK;
 if segmentationEnabled
-    for trialIndex = 1:numberOfTrials
-        trialName = trialNames{trialIndex};
+    for iTrial = 1:numberOfTrials
+        trialName = trialNames{iTrial};
         if ~isfloat(STACK_seg.(trialName))
             STACK_seg.(trialName) = double(STACK_seg.(trialName));
         end
@@ -1666,28 +1443,27 @@ if segmentationEnabled
 end
 
 Segmentation = struct();
-for groupIndex = 1:numel(trialGroups)
-    trialIndices = trialGroups{groupIndex};
+for iGroup = 1:numel(trialGroups)
+    trialIndices = trialGroups{iGroup};
     firstTrial = STACK.(trialNames{trialIndices(1)});
-    for planeIndex = 1:size(firstTrial, 3)
+    for iPlane = 1:size(firstTrial, 3)
         if segmentationEnabled
             sourceIndices = trialIndices(1);
             if strcmp(mode, 'together'), sourceIndices = trialIndices; end
             % Shared labels use geometry measured in every contributing
             % trial; a moving valid border must not drive ROI detection.
             commonMask = true(size(firstTrial,1),size(firstTrial,2));
-            for member = trialIndices
-                commonMask = commonMask & SET.STACK_mask.(trialNames{member})(:,:,planeIndex);
+            for iMember = trialIndices
+                commonMask = commonMask & SET.STACK_mask.(trialNames{iMember})(:,:,iPlane);
             end
             sourceMovies = cell(1, numel(sourceIndices));
-            for sourceIndex = 1:numel(sourceIndices)
-                name = trialNames{sourceIndices(sourceIndex)};
-                good = ~QC.(name).planes(planeIndex).frames.excluded;
-                movie = getPlane(STACK.(name),planeIndex);
+            for iSource = 1:numel(sourceIndices)
+                name = trialNames{sourceIndices(iSource)};
+                movie = getPlane(STACK.(name),iPlane);
                 movie = reshape(movie,[],size(movie,3));
                 valid = commonMask;
                 movie(~valid(:),:) = 0;
-                sourceMovies{sourceIndex} = reshape(movie(:,good),size(valid,1),size(valid,2),nnz(good));
+                sourceMovies{iSource} = reshape(movie,size(valid,1),size(valid,2),[]);
             end
             sourceMovie = cat(3, sourceMovies{:});
             if strcmp(method, 'CalciSeg') && ~isfloat(sourceMovie)
@@ -1696,7 +1472,7 @@ for groupIndex = 1:numel(trialGroups)
             if size(sourceMovie,3)==0 || ~any(commonMask(:))
                 % An unusable template cannot provide meaningful shared labels.
                 assert(~strcmp(mode,'template') || numel(trialIndices)==1, ...
-                    'No usable template frames in plane %d.',planeIndex);
+                    'No usable template image in plane %d.',iPlane);
                 labelImage = zeros(size(firstTrial,1),size(firstTrial,2));
                 sourceSummary = struct();
             elseif quiet
@@ -1713,44 +1489,44 @@ for groupIndex = 1:numel(trialGroups)
             sourceSummary = struct([]);
         end
 
-        for trialIndex = trialIndices
-            trialName = trialNames{trialIndex};
-            planeMovie = getPlane(measurement.(trialName), planeIndex);
+        for iTrial = trialIndices
+            trialName = trialNames{iTrial};
+            planeMovie = getPlane(STACK.(trialName), iPlane);
             % Keep shared IDs stable and remove invalid geometry for this trial.
             trialLabels = labelImage;
-            trialLabels(~SET.STACK_mask.(trialName)(:,:,planeIndex)) = 0;
+            trialLabels(~SET.STACK_mask.(trialName)(:,:,iPlane)) = 0;
             summary = sourceSummary;
             if segmentationEnabled
                 summary = trialSummary(planeMovie,trialLabels,sourceSummary);
             end
-            Segmentation.(trialName)(planeIndex).pockets_labeled = trialLabels;
-            Segmentation.(trialName)(planeIndex).summary_stats = summary;
+            Segmentation.(trialName)(iPlane).pockets_labeled = trialLabels;
+            Segmentation.(trialName)(iPlane).summary_stats = summary;
 
             if segmentationEnabled
                 pixelTraces = reshape(planeMovie, [], size(planeMovie, 3));
                 if ~isfloat(pixelTraces), pixelTraces = double(pixelTraces); end
                 regionIDs = unique(trialLabels(:)); % Include background (ID 0).
-                valid = SET.STACK_mask.(trialName)(:,:,planeIndex);
-                for regionIndex = 1:numel(regionIDs)
-                    regionPixels = trialLabels(:) == regionIDs(regionIndex) & valid(:);
+                valid = SET.STACK_mask.(trialName)(:,:,iPlane);
+                for iRegion = 1:numel(regionIDs)
+                    regionPixels = trialLabels(:) == regionIDs(iRegion) & valid(:);
                     meanTrace = mean(pixelTraces(regionPixels, :), 1, 'omitnan');
                     pixelTraces(regionPixels, :) = repmat(meanTrace, nnz(regionPixels), 1);
                 end
                 segmentedPlane = reshape(pixelTraces, ...
                     size(planeMovie, 1), size(planeMovie, 2), 1, size(planeMovie, 3));
-                STACK_seg.(trialName)(:, :, planeIndex, :) = segmentedPlane;
+                STACK_seg.(trialName)(:, :, iPlane, :) = segmentedPlane;
             end
         end
     end
 end
 end
 
-function planeMovie = getPlane(trial, planeIndex)
-planeMovie = reshape(trial(:, :, planeIndex, :), size(trial, 1), size(trial, 2), size(trial, 4));
+function planeMovie = getPlane(trial, iPlane)
+planeMovie = reshape(trial(:, :, iPlane, :), size(trial, 1), size(trial, 2), size(trial, 4));
 end
 
 function summary = trialSummary(planeMovie, labelImage, sourceSummary)
-% Retain segmentation metadata; recompute the agreed activity fields per trial.
+% Retain segmentation metadata; recompute activity statistics per trial.
 % regionIDs identifies the label represented by each row of avgTCs/granule_Corr.
 summary = sourceSummary;
 regionIDs = unique(labelImage(labelImage > 0));
@@ -1768,22 +1544,22 @@ summary.avgTCs = nan(numberOfRegions, size(planeMovie, 3));
 summary.granule_Corr = nan(numberOfRegions, 1);
 summary.pixelCounts = zeros(numberOfRegions, 1);
 statisticNames = {'Avg', 'Std', 'Max', 'Min', 'Median'};
-for statisticIndex = 1:numel(statisticNames)
-    summary.(['granule_' statisticNames{statisticIndex} '_img']) = nan(size(labelImage));
+for iStatistic = 1:numel(statisticNames)
+    summary.(['granule_' statisticNames{iStatistic} '_img']) = nan(size(labelImage));
 end
-for regionIndex = 1:numberOfRegions
-    regionPixels = labelImage(:) == regionIDs(regionIndex);
+for iRegion = 1:numberOfRegions
+    regionPixels = labelImage(:) == regionIDs(iRegion);
     traces = pixelTraces(regionPixels, :);
     meanTrace = mean(traces, 1, 'omitnan');
-    summary.avgTCs(regionIndex, :) = meanTrace;
-    summary.granule_Corr(regionIndex) = meanPairCorrelation(traces);
-    summary.pixelCounts(regionIndex) = nnz(regionPixels);
+    summary.avgTCs(iRegion, :) = meanTrace;
+    summary.granule_Corr(iRegion) = meanPairCorrelation(traces);
+    summary.pixelCounts(iRegion) = nnz(regionPixels);
     statistics = [mean(meanTrace, 'omitnan'), std(meanTrace, 0, 'omitnan'), ...
         max(meanTrace, [], 'omitnan'), min(meanTrace, [], 'omitnan'), ...
         median(meanTrace, 'omitnan')];
-    for statisticIndex = 1:numel(statisticNames)
-        fieldName = ['granule_' statisticNames{statisticIndex} '_img'];
-        summary.(fieldName)(regionPixels) = statistics(statisticIndex);
+    for iStatistic = 1:numel(statisticNames)
+        fieldName = ['granule_' statisticNames{iStatistic} '_img'];
+        summary.(fieldName)(regionPixels) = statistics(iStatistic);
     end
 end
 end
@@ -1810,14 +1586,14 @@ else
     % Pairwise finite samples when missing values differ between pixels.
     correlationSum = 0;
     pairCount = 0;
-    for firstPixel = 1:size(traces, 1)-1
-        for secondPixel = firstPixel+1:size(traces, 1)
-            shared = isfinite(traces(firstPixel, :)) & isfinite(traces(secondPixel, :));
+    for iFirstPixel = 1:size(traces, 1)-1
+        for iSecondPixel = iFirstPixel+1:size(traces, 1)
+            shared = isfinite(traces(iFirstPixel, :)) & isfinite(traces(iSecondPixel, :));
             if nnz(shared) < 2
                 continue
             end
-            first = traces(firstPixel, shared);
-            second = traces(secondPixel, shared);
+            first = traces(iFirstPixel, shared);
+            second = traces(iSecondPixel, shared);
             first = first - mean(first);
             second = second - mean(second);
             denominator = norm(first)*norm(second);
@@ -1871,7 +1647,7 @@ displayImage(~isfinite(displayImage)) = 0;
 displayLimit = quantile(displayImage(:), 0.999);
 displayLimits = symmetricLimits(displayLimit);
 figureHandle = figure('Name', 'Manual ROI slicing', 'Color', 'w', ...
-    'Units', 'normalized', 'Position', [0.05 0.05 0.9 0.85]);
+    'Units', 'pixels', 'Position', [100 100 1200 800]);
 figureCleanup = onCleanup(@() closeFigure(figureHandle)); %#ok<NASGU>
 axesHandle = axes('Parent', figureHandle);
 
@@ -1886,10 +1662,10 @@ while true
     hold(axesHandle, 'on');
     labelOffset = 0;
 
-    for roiIndex = 1:numberOfROIs
+    for iROI = 1:numberOfROIs
         while true
             title(axesHandle, sprintf('Draw %s (%d/%d); double-click to finish', ...
-                roiNames{roiIndex}, roiIndex, numberOfROIs), 'Interpreter', 'none');
+                roiNames{iROI}, iROI, numberOfROIs), 'Interpreter', 'none');
             drawnow;
             polygon = drawpolygon(axesHandle);
             if ~isgraphics(figureHandle)
@@ -1910,7 +1686,7 @@ while true
             end
             try
                 localLabels = sliceMask( ...
-                    rawMask, slicesPerROI(roiIndex), sliceOptions);
+                    rawMask, slicesPerROI(iROI), sliceOptions);
             catch exception
                 choice = questdlg(exception.message, 'Slicing failed', ...
                     'Redraw', 'Cancel', 'Redraw');
@@ -1924,10 +1700,10 @@ while true
                     'Overlap', 'modal'));
                 continue
             end
-            centroids = zeros(slicesPerROI(roiIndex), 2);
-            for sliceIndex = 1:slicesPerROI(roiIndex)
-                [rows, columns] = find(localLabels == sliceIndex);
-                centroids(sliceIndex, :) = [mean(columns), mean(rows)];
+            centroids = zeros(slicesPerROI(iROI), 2);
+            for iSlice = 1:slicesPerROI(iROI)
+                [rows, columns] = find(localLabels == iSlice);
+                centroids(iSlice, :) = [mean(columns), mean(rows)];
             end
             if any(~isfinite(centroids(:)))
                 uiwait(warndlg(['Some slices contain no pixels. Redraw a larger ROI ' ...
@@ -1937,24 +1713,24 @@ while true
             break
         end
 
-        sliceOrder = 1:slicesPerROI(roiIndex); % Already ordered along the midline.
-        for sliceIndex = 1:numel(sliceOrder)
-            regionMask = localLabels == sliceOrder(sliceIndex);
-            regionID = labelOffset + sliceIndex;
-            labelImage(regionMask) = regionID;
+        sliceOrder = 1:slicesPerROI(iROI); % Already ordered along the midline.
+        for iSlice = 1:numel(sliceOrder)
+            regionMask = localLabels == sliceOrder(iSlice);
+            iRegionID = labelOffset + iSlice;
+            labelImage(regionMask) = iRegionID;
             boundaries = bwboundaries(regionMask, 'noholes');
-            for boundaryIndex = 1:numel(boundaries)
-                boundary = boundaries{boundaryIndex};
+            for iBoundary = 1:numel(boundaries)
+                boundary = boundaries{iBoundary};
                 plot(axesHandle, boundary(:, 2), boundary(:, 1), 'k-', 'LineWidth', 0.5, ...
                     'HitTest', 'off', 'PickableParts', 'none');
             end
-            center = centroids(sliceOrder(sliceIndex), :);
-            text(axesHandle, center(1), center(2), num2str(regionID), ...
+            center = centroids(sliceOrder(iSlice), :);
+            text(axesHandle, center(1), center(2), num2str(iRegionID), ...
                 'Color', 'w', 'BackgroundColor', 'k', 'HorizontalAlignment', 'center', ...
                 'HitTest', 'off', 'PickableParts', 'none');
         end
         occupiedRaw = occupiedRaw | rawMask;
-        labelOffset = labelOffset + slicesPerROI(roiIndex);
+        labelOffset = labelOffset + slicesPerROI(iROI);
     end
     title(axesHandle, 'Review numbered slices');
     choice = questdlg('Keep this segmentation?', 'Review segmentation', ...
@@ -1972,30 +1748,30 @@ pixelTraces = reshape(movie, [], size(movie, 3));
 summary.avgTCs = nan(numberOfRegions, size(movie, 3));
 summary.granule_Corr = nan(numberOfRegions, 1);
 statisticNames = {'Avg', 'Std', 'Max', 'Min', 'Median'};
-for statisticIndex = 1:numel(statisticNames)
-    fieldName = ['granule_' statisticNames{statisticIndex} '_img'];
+for iStatistic = 1:numel(statisticNames)
+    fieldName = ['granule_' statisticNames{iStatistic} '_img'];
     summary.(fieldName) = nan(imageSize);
 end
 summary.roiNames = roiNames;
 summary.roiIndex = repelem((1:numberOfROIs)', slicesPerROI);
 summary.sliceIndex = zeros(numberOfRegions, 1);
 summary.pixelCounts = zeros(numberOfRegions, 1);
-for roiIndex = 1:numberOfROIs
-    summary.sliceIndex(summary.roiIndex == roiIndex) = (1:slicesPerROI(roiIndex))';
+for iROI = 1:numberOfROIs
+    summary.sliceIndex(summary.roiIndex == iROI) = (1:slicesPerROI(iROI))';
 end
-for regionID = 1:numberOfRegions
-    regionPixels = labelImage(:) == regionID;
+for iRegionID = 1:numberOfRegions
+    regionPixels = labelImage(:) == iRegionID;
     traces = pixelTraces(regionPixels, :);
     meanTrace = mean(traces, 1, 'omitnan');
-    summary.avgTCs(regionID, :) = meanTrace;
-    summary.granule_Corr(regionID) = meanPairCorrelation(traces);
-    summary.pixelCounts(regionID) = nnz(regionPixels);
+    summary.avgTCs(iRegionID, :) = meanTrace;
+    summary.granule_Corr(iRegionID) = meanPairCorrelation(traces);
+    summary.pixelCounts(iRegionID) = nnz(regionPixels);
     statistics = [mean(meanTrace, 'omitnan'), std(meanTrace, 0, 'omitnan'), ...
         max(meanTrace, [], 'omitnan'), min(meanTrace, [], 'omitnan'), ...
         median(meanTrace, 'omitnan')];
-    for statisticIndex = 1:numel(statisticNames)
-        fieldName = ['granule_' statisticNames{statisticIndex} '_img'];
-        summary.(fieldName)(regionPixels) = statistics(statisticIndex);
+    for iStatistic = 1:numel(statisticNames)
+        fieldName = ['granule_' statisticNames{iStatistic} '_img'];
+        summary.(fieldName)(regionPixels) = statistics(iStatistic);
     end
 end
 end
@@ -2013,8 +1789,8 @@ defaults = struct('SmoothMode', "openclose", 'SmoothRadius', 5, ...
     'MidlineN', 1200, 'SmoothWin', 21, 'ExtendStep', 0.5, ...
     'MaxExtendSteps', 5000, 'PixelSize', [1 1]);
 names = fieldnames(defaults);
-for optionIndex = 1:numel(names)
-    name = names{optionIndex};
+for iOption = 1:numel(names)
+    name = names{iOption};
     if ~isfield(options, name) || isempty(options.(name))
         options.(name) = defaults.(name);
     end
@@ -2060,7 +1836,7 @@ assert(nnz(skeleton) >= 2, 'ROI is too small to extract a midline.');
 
 % Trace the skeleton between two distant endpoints.
 [row, column] = find(skeleton, 1);
-for sweep = 1:2
+for iSweep = 1:2
     distance = bwdistgeodesic(skeleton, column, row, 'quasi-euclidean');
     distance(~isfinite(distance)) = Inf;
     reachable = distance;
@@ -2134,7 +1910,7 @@ function midline = extendEnd(midline, mask, options)
 direction = midline(end, :) - midline(max(1, end-9), :);
 if norm(direction) == 0, return; end
 step = options.ExtendStep * direction / norm(direction);
-for extensionIndex = 1:options.MaxExtendSteps
+for iExtension = 1:options.MaxExtendSteps
     point = midline(end, :) + step;
     pixel = round(point);
     if pixel(1) < 1 || pixel(1) > size(mask, 2) || ...
@@ -2147,7 +1923,7 @@ end
 
 %% ------------------------------------------------------------------------
 
-function PCA = embedTrialFrames(Segmentation,SET,QC)
+function PCA = embedTrialFrames(Segmentation,SET)
 % Fit one PCA per animal. Rows are acquired frames (volumes for multiplane
 % data), and columns are segmented regions identified within each plane.
 PCA = struct('status','disabled');
@@ -2169,32 +1945,30 @@ end
 keys = cell(numel(names),1);
 movies = cell(numel(names),1);
 frameInfo = cell(numel(names),1);
-for k = 1:numel(names)
-    name = names{k};
+for iTrial = 1:SET.N
+    name = names{iTrial};
     n = size(SET.(name).relativeTime,2);
-    keys{k} = zeros(0,2);
-    movies{k} = zeros(n,0);
-    gap = false(n,1);
-    for z = 1:numel(Segmentation.(name))
-        summary = Segmentation.(name)(z).summary_stats;
-        gap = gap | QC.(name).planes(z).frames.gap_before;
+    keys{iTrial} = zeros(0,2);
+    movies{iTrial} = zeros(n,0);
+    for iPlane = 1:numel(Segmentation.(name))
+        summary = Segmentation.(name)(iPlane).summary_stats;
         if ~isfield(summary,'avgTCs') || isempty(summary.avgTCs), continue; end
         ids = summary.regionIDs(:);
         assert(isequal(size(summary.avgTCs),[numel(ids),n]) && numel(unique(ids))==numel(ids), ...
-            'Invalid PCA trace mapping for %s plane %d.',name,z);
+            'Invalid PCA trace mapping for %s plane %d.',name,iPlane);
         % A region with no usable baseline in this trial cannot provide a shared feature.
         usable = any(isfinite(summary.avgTCs),2);
-        keys{k} = [keys{k}; repmat(z,nnz(usable),1),ids(usable)];
-        movies{k} = [movies{k},summary.avgTCs(usable,:)'];
+        keys{iTrial} = [keys{iTrial}; repmat(iPlane,nnz(usable),1),ids(usable)];
+        movies{iTrial} = [movies{iTrial},summary.avgTCs(usable,:)'];
     end
-    if k==1
-        shared = keys{k};
+    if iTrial==1
+        shared = keys{iTrial};
     else
-        shared = intersect(shared,keys{k},'rows','stable');
+        shared = intersect(shared,keys{iTrial},'rows','stable');
     end
-    frameInfo{k} = table(repmat(k,n,1),repmat(string(name),n,1),(1:n)', ...
-        mean(SET.(name).relativeTime,1)',gap,'VariableNames', ...
-        {'trial_index','trial_name','frame','time_s','gap_before'});
+    frameInfo{iTrial} = table(repmat(iTrial,n,1),repmat(string(name),n,1),(1:n)', ...
+        mean(SET.(name).relativeTime,1)','VariableNames', ...
+        {'trial_index','trial_name','frame','time_s'});
 end
 PCA.frames = vertcat(frameInfo{:});
 if isempty(shared)
@@ -2203,9 +1977,9 @@ if isempty(shared)
 end
 
 % Reorder every trial to the same feature map before pooling its frames.
-for k = 1:numel(names)
-    [~,columns] = ismember(shared,keys{k},'rows');
-    movies{k} = movies{k}(:,columns);
+for iTrial = 1:SET.N
+    [~,columns] = ismember(shared,keys{iTrial},'rows');
+    movies{iTrial} = movies{iTrial}(:,columns);
 end
 X = vertcat(movies{:});
 % Remove constant features first so their missing samples do not cost frames.
@@ -2254,31 +2028,26 @@ if size(PCA.score,2)<2, return; end
 
 % Use MATLAB's axes color order unless a BrewerMap palette was selected.
 nTrials = numel(SET.trial_names_clean);
-fig = figure('Visible','off','Color','w');
-cleanup = onCleanup(@() deleteVideoFigure(fig)); %#ok<NASGU>
+fig = figure('Color','w', 'Units','pixels','Position',[100 100 1200 800]);
 ax = axes(fig);
 hold(ax,'on');
 if ~isempty(SET.TrialColors)
     ax.ColorOrder = brewermap(nTrials,char(SET.TrialColors));
 end
-for k = 1:nTrials
-    rows = PCA.frames.trial_index==k;
+for iTrial = 1:nTrials
+    rows = PCA.frames.trial_index==iTrial;
     xy = PCA.score(rows,1:2);
-    % Insert a separator at acquisition gaps while keeping the next frame.
-    gaps = PCA.frames.gap_before(rows);
-    positions = (1:size(xy,1))' + cumsum(gaps);
-    path = nan(size(xy,1)+nnz(gaps),2);
-    path(positions,:) = xy;
-    plot(ax,path(:,1),path(:,2),'.-', ...
-        'DisplayName',SET.trial_names_clean{k});
+    plot(ax,xy(:,1),xy(:,2),'.-', ...
+        'DisplayName',SET.trial_names_clean{iTrial});
 end
 xlabel(ax,sprintf('PC1 (%.1f%%)',PCA.explained(1)));
 ylabel(ax,sprintf('PC2 (%.1f%%)',PCA.explained(2)));
 title(ax,'Frame trajectories from segmented dF/F');
-legend(ax,'Interpreter','none','Location','bestoutside');
+legend(ax,'Interpreter','none','Location','best');
 axis(ax,'equal');
 drawnow;
 export_fig(fig,fullfile(folder,'frame_pca.pdf'),'-pdf','-painters');
+close(fig)
 end
 
 function outputFolder = saveCRAPview(STACK, STACK_proc, Segmentation, SET, outputFolder, varargin)
@@ -2297,7 +2066,7 @@ function outputFolder = saveCRAPview(STACK, STACK_proc, Segmentation, SET, outpu
 % maximum PDFs are written inside each trial folder. Other summary PDFs,
 % results.mat and metadata.json are written at the animal level.
 % SET records the requested baseline and each trial's effective setting.
-% Quality stores actual ROI baselines, frame QC, masks and reference images.
+% Quality stores actual ROI baselines, spatial masks and anatomical mean images.
 % Per-plane QC tables and manual-slice overlay/heatmap PDFs accompany the traces.
 % On overwrite, the prior export is backed up until publication. COMPLETE.json
 % is published after all current data files have been moved into place.
@@ -2335,20 +2104,20 @@ assert(~isempty(lock),'Another CRAPview export is active in %s.',outputFolder);
 
 % Check MPEG-4 and PDF export support before writing trial data.
 profiles = VideoWriter.getProfiles();
-assert(any(strcmp({profiles.Name},'MPEG-4')), ...
-    'This MATLAB installation does not support MPEG-4 video export.');
+assert(any(strcmp({profiles.Name},'Motion JPEG AVI')), ...
+    'This MATLAB installation does not support Motion JPEG AVI video export.');
 assert(exist('export_fig','file') ~= 0, 'Add export_fig to the MATLAB path.');
 
 % Name both movies and the two PDF summaries for each trial.
 trialNames = SET.trial_names_clean(:)';
 namesWithSuffix = @(names,suffix) cellfun(@(name) [name suffix],names,'UniformOutput',false);
-projectionNames = namesWithSuffix(trialNames,'_pixel_dff_std.pdf');
-segmentationNames = namesWithSuffix(trialNames,'_segmentation.pdf');
+stdProjectionNames = namesWithSuffix(trialNames,'_projection_std.pdf');
+avgProjectionNames = namesWithSuffix(trialNames,'_projection_avg.pdf');
 
 % Publish only the current trials and format. Keep the completion marker
 % first here so it can be backed up first and published last.
 exportNames = [{'COMPLETE.json','results.mat','pixel_dff.h5','region_dff.h5','metadata.json'}, ...
-    trialNames, projectionNames, segmentationNames];
+    trialNames, stdProjectionNames, avgProjectionNames];
 
 % Publish the score table for every successful fit and a plot for rank >= 2.
 if strcmp(PCA.status,'complete')
@@ -2359,21 +2128,31 @@ end
 % Include trials from the previous export when the current selection has
 % changed. The saved PDF manifest has one field per exported trial.
 knownTrials = trialNames;
+priorPDFs = {};
 previousMetadata = fullfile(outputFolder,'metadata.json');
 if overwrite && isfile(previousMetadata)
     previous = jsondecode(fileread(previousMetadata));
     if isfield(previous,'format_version') && isfield(previous,'pdfs') && isstruct(previous.pdfs)
         knownTrials = union(trialNames,fieldnames(previous.pdfs)','stable');
+        % Retire top-level trial PDFs listed in the existing manifest, including renamed projections.
+        for iTrial = 1:numel(knownTrials)
+            name = knownTrials{iTrial};
+            if ~isfield(previous.pdfs,name), continue; end
+            values = struct2cell(previous.pdfs.(name));
+            for iField = 1:numel(values)
+                file = values{iField};
+                if ischar(file) && startsWith(file,[name '_']) && endsWith(file,'.pdf') && ...
+                        ~contains(file,'/') && ~contains(file,char(92))
+                    priorPDFs{end+1} = file;
+                end
+            end
+        end
     end
 end
 
-% Back up recognized current and legacy outputs, including entire trial
-% folders. Moving each folder also retires its obsolete per-plane CSVs.
-backupNames = [exportNames, {'stacks.h5','stacks_proc.h5','frame_pca_scores.csv','frame_pca.pdf'}, knownTrials];
-for suffix = {'.mp4','_dff.mp4','_std_projection.pdf','_segmentation.pdf', ...
-        '_pixel_dff.mp4','_region_dff.mp4','_pixel_dff_outlines.mp4','_pixel_dff_std.pdf','_fluorescence_max.pdf'}
-    backupNames = [backupNames, namesWithSuffix(knownTrials,suffix{1})];
-end
+% Back up published animal files and trial folders before replacement.
+backupNames = [exportNames, priorPDFs, {'frame_pca_scores.csv','frame_pca.pdf'}, knownTrials, ...
+    namesWithSuffix(knownTrials,'_projection_std.pdf'),namesWithSuffix(knownTrials,'_projection_avg.pdf')];
 backupNames = unique(backupNames,'stable');
 existing = cellfun(@(name) isfile(fullfile(outputFolder,name)) || ...
     isfolder(fullfile(outputFolder,name)), backupNames);
@@ -2390,7 +2169,7 @@ Traces = struct();
 
 % Record the settings and export conventions so readers can interpret the
 % CSV units and recover the MATLAB axis order from the HDF5 datasets.
-metadata.format_version = 5;
+metadata.format_version = 6;
 metadata.segmentation_avgTCs = ['results.mat: Segmentation.(trial)(plane).summary_stats.avgTCs ' ...
     'contains fractional dF/F of each segmentation trace. Rows follow regionIDs; ' ...
     'avgTCs_F0 is the fluorescence baseline used for each row.'];
@@ -2404,10 +2183,9 @@ metadata.labels_orientation = 'rows=image rows, columns=image columns; no header
 metadata.time_units = 'seconds';
 metadata.dff_units = 'fraction, not percent';
 metadata.baseline_qc = 'F0 and finite-sample counts are computed during normalization. Minimum absolute F0 is the larger of the configured absolute and relative floors.';
-metadata.dff_formula = '(F - F0) / abs(F0); unusable F0 and excluded frames are NaN';
-metadata.quality = 'results.mat Quality contains registration references, native-plane QC, and measured baseline diagnostics.';
+metadata.dff_formula = '(F - F0) / abs(F0); unusable F0 gives NaN';
+metadata.quality = 'results.mat Quality contains spatial registration masks, anatomical images and measured baseline diagnostics.';
 metadata.roi_fluorescence = 'roi_fluorescence.csv contains F entering normalization.';
-metadata.frame_qc = 'Original acquisition slots are retained. Excluded frames are NaN. Gaps split temporal filtering.';
 metadata.registration_mask = 'Common measured support over frames; excludes affine fill and conservative nonrigid margins.';
 metadata.pixel_dff = 'STACK: normalize each pixel using its own fluorescence baseline.';
 metadata.mean_pixel_dff = 'mean_pixel_dff.csv: average STACK over the pixels of each label, omitting NaNs.';
@@ -2420,9 +2198,12 @@ metadata.timestamp_note = 'Projection timestamps average the selected planes. Or
 % settings.dFF_type and settings.dFF_value describe the request. Each
 % settings.(trialName).dFF_value records the value used by the main block.
 
+% Use one exact percentile across all movie values for this animal.
+movieLimits = pooledMovieLimits(STACK,STACK_proc,trialNames);
+
 % Export each trial and plane; trace-row mapping includes background ID 0.
-for trialIndex = 1:numel(trialNames)
-    trialName = trialNames{trialIndex};
+for iTrial = 1:numel(trialNames)
+    trialName = trialNames{iTrial};
     trialFolder = fullfile(stagingFolder,trialName);
     mkdir(trialFolder);
 
@@ -2440,49 +2221,49 @@ for trialIndex = 1:numel(trialNames)
         'Timestamp dimensions do not match trial %s.',trialName);
 
     % Give each plane its own label image, region traces and timestamps.
-    for planeIndex = 1:size(trial,3)
-        planeFolder = fullfile(trialFolder,sprintf('plane_%03d',planeIndex));
+    for iPlane = 1:size(trial,3)
+        planeFolder = fullfile(trialFolder,sprintf('plane_%03d',iPlane));
         mkdir(planeFolder);
 
         % Require one nonnegative integer region label per image pixel.
-        labels = Segmentation.(trialName)(planeIndex).pockets_labeled;
+        labels = Segmentation.(trialName)(iPlane).pockets_labeled;
         assert(isequal(size(labels),[size(trial,1),size(trial,2)]) && ...
             all(isfinite(labels(:))) && all(labels(:) >= 0) && ...
             all(labels(:) == fix(labels(:))), 'Invalid label image for %s.',trialName);
         regionIDs = unique(labels(:));
         numberOfRegions = numel(regionIDs);
         % Flatten each frame in the same pixel order as labels(:). Each trace column is one frame.
-        pixelTraces = reshape(trial(:,:,planeIndex,:),[],numberOfFrames);
-        processedTraces = reshape(processed(:,:,planeIndex,:),[],numberOfFrames);
+        pixelTraces = reshape(trial(:,:,iPlane,:),[],numberOfFrames);
+        processedTraces = reshape(processed(:,:,iPlane,:),[],numberOfFrames);
 
         % Allocate one row per label, including background when present.
         meanPixelDff = nan(numberOfRegions,numberOfFrames,'like',trial);
         regionDff = nan(numberOfRegions,numberOfFrames,'like',processed);
         pixelCounts = zeros(numberOfRegions,1);
         validSpatial = true(size(labels));
-        if isfield(SET,'STACK_mask'), validSpatial = SET.STACK_mask.(trialName)(:,:,planeIndex); end
+        if isfield(SET,'STACK_mask'), validSpatial = SET.STACK_mask.(trialName)(:,:,iPlane); end
 
         % Average normalized pixels for the first trace. The second movie
         % already contains the normalized region mean at each labeled pixel.
-        for regionIndex = 1:numberOfRegions
-            pixels = labels(:) == regionIDs(regionIndex);
-            meanPixelDff(regionIndex,:) = mean(pixelTraces(pixels,:),1,'omitnan');
-            regionDff(regionIndex,:) = mean(processedTraces(pixels,:),1,'omitnan');
-            pixelCounts(regionIndex) = nnz(pixels & validSpatial(:));
+        for iRegion = 1:numberOfRegions
+            pixels = labels(:) == regionIDs(iRegion);
+            meanPixelDff(iRegion,:) = mean(pixelTraces(pixels,:),1,'omitnan');
+            regionDff(iRegion,:) = mean(processedTraces(pixels,:),1,'omitnan');
+            pixelCounts(iRegion) = nnz(pixels & validSpatial(:));
         end
 
         % Names and slice indices are optional metadata from manualSliceSeg.
         roiNames = repmat({''},numberOfRegions,1);
         sliceIndices = nan(numberOfRegions,1);
-        sourceSummary = Segmentation.(trialName)(planeIndex).summary_stats;
+        sourceSummary = Segmentation.(trialName)(iPlane).summary_stats;
         if isscalar(sourceSummary) && isfield(sourceSummary,'roiIndex')
             summaryIDs = (1:numel(sourceSummary.roiIndex))';
             if isfield(sourceSummary,'regionIDs'), summaryIDs = sourceSummary.regionIDs; end
             [present,summaryRows] = ismember(regionIDs,summaryIDs);
-            for regionIndex = find(present(:))'
-                row = summaryRows(regionIndex);
-                roiNames{regionIndex} = sourceSummary.roiNames{sourceSummary.roiIndex(row)};
-                sliceIndices(regionIndex) = sourceSummary.sliceIndex(row);
+            for iRegion = find(present(:))'
+                row = summaryRows(iRegion);
+                roiNames{iRegion} = sourceSummary.roiNames{sourceSummary.roiIndex(row)};
+                sliceIndices(iRegion) = sourceSummary.sliceIndex(row);
             end
         end
         roiNames(regionIDs==0) = {'background'};
@@ -2490,8 +2271,8 @@ for trialIndex = 1:numel(trialNames)
         % The frame column in imaging_times.csv identifies the corresponding trace column.
         regions = table((1:numberOfRegions)',regionIDs,pixelCounts,roiNames,sliceIndices, ...
             'VariableNames',{'trace_row','region_id','pixel_count','roi_name','slice_index'});
-        timing = table((1:numberOfFrames)',trialSettings.relativeTime(planeIndex,:)', ...
-            trialSettings.absoluteTime(planeIndex,:)', ...
+        timing = table((1:numberOfFrames)',trialSettings.relativeTime(iPlane,:)', ...
+            trialSettings.absoluteTime(iPlane,:)', ...
             'VariableNames',{'frame','relative_time_s','absolute_time_s'});
 
         % Write the label image and the tables used to interpret both trace matrices.
@@ -2502,23 +2283,22 @@ for trialIndex = 1:numel(trialNames)
         writetable(timing,fullfile(planeFolder,'imaging_times.csv'));
 
         % Store the same row mapping and time base with the MATLAB trace arrays.
-        Traces.(trialName)(planeIndex).regions = regions;
-        Traces.(trialName)(planeIndex).mean_pixel_dff = meanPixelDff;
-        Traces.(trialName)(planeIndex).region_dff = regionDff;
-        Traces.(trialName)(planeIndex).imaging_times = timing;
+        Traces.(trialName)(iPlane).regions = regions;
+        Traces.(trialName)(iPlane).mean_pixel_dff = meanPixelDff;
+        Traces.(trialName)(iPlane).region_dff = regionDff;
+        Traces.(trialName)(iPlane).imaging_times = timing;
 
-        % Save the frame ledger, measured fluorescence and F0 alongside the
+        % Save the measured fluorescence and F0 alongside the
         % normalized traces, using the same trace rows and frame numbers.
         if isfield(Quality,trialName)
-            q = Quality.(trialName).planes(planeIndex);
-            writetable(q.frames,fullfile(planeFolder,'frame_qc.csv'));
+            q = Quality.(trialName).planes(iPlane);
             writetable(q.baselines,fullfile(planeFolder,'baseline_qc.csv'));
             writeJSON(fullfile(planeFolder,'pixel_baseline_summary.json'),q.pixelBaselineSummary);
             writematrix(q.fluorescence,fullfile(planeFolder,'roi_fluorescence.csv'));
             writematrix(q.pixelBaselineValid,fullfile(planeFolder,'pixel_baseline_valid.csv'));
-            writematrix(SET.STACK_mask.(trialName)(:,:,planeIndex),fullfile(planeFolder,'registration_valid.csv'));
+            writematrix(SET.STACK_mask.(trialName)(:,:,iPlane),fullfile(planeFolder,'registration_valid.csv'));
             if strcmp(SET.segmentation_method,'manualSliceSeg')
-                writeSliceQC(q,labels,regions,regionDff,trialFolder,trialName,planeIndex,planeTitles{planeIndex},SET.colmap);
+                writeSliceQC(q,labels,regions,regionDff,trialFolder,trialName,iPlane,planeTitles{iPlane},SET.colmap,timing.relative_time_s);
             end
         end
     end
@@ -2526,14 +2306,12 @@ for trialIndex = 1:numel(trialNames)
     % Trace geometry once per trial and reuse it across PDFs and video frames.
     boundaries = cell(1,size(trial,3));
     if ~isempty(SET.segmentation_method)
-        for z = 1:numel(boundaries)
-            boundaries{z} = regionEdges(Segmentation.(trialName)(z).pockets_labeled);
+        for iPlane = 1:numel(boundaries)
+            boundaries{iPlane} = regionEdges(Segmentation.(trialName)(iPlane).pockets_labeled);
         end
     end
-    planeQC = [];
-    if isfield(Quality,trialName), planeQC = Quality.(trialName).planes; end
     metadata.pdfs.(trialName) = writeTrialPDFs(trial,processed,Segmentation.(trialName), ...
-        planeQC,boundaries,SET,stagingFolder,trialName,planeTitles);
+        boundaries,SET,stagingFolder,trialName,planeTitles);
 
     if isfield(Quality,trialName) && strcmp(SET.segmentation_method,'manualSliceSeg')
         metadata.pdfs.(trialName).slice_qc = [trialName '/slice_qc.pdf'];
@@ -2545,11 +2323,11 @@ for trialIndex = 1:numel(trialNames)
     regionVideo = [trialName '/' trialName '_region_dff.mp4'];
     metadata.pixel_dff_videos.(trialName) = writeTrialVideo(trial, ...
         trialSettings.relativeTime,fullfile(stagingFolder,pixelVideo), ...
-        SET,'Pixelwise dF/F (fraction)','STACK',boundaries,planeTitles);
+        SET,'Pixelwise dF/F (fraction)','STACK',boundaries,planeTitles,movieLimits);
     metadata.pixel_dff_videos.(trialName).filename = pixelVideo;
     metadata.region_dff_videos.(trialName) = writeTrialVideo(processed, ...
         trialSettings.relativeTime,fullfile(stagingFolder,regionVideo), ...
-        SET,'Region dF/F (fraction)','STACK_proc',cell(size(boundaries)),planeTitles);
+        SET,'Region dF/F (fraction)','STACK_proc',cell(size(boundaries)),planeTitles,movieLimits);
     metadata.region_dff_videos.(trialName).filename = regionVideo;
 
     % Combine rising and falling trigger edges into one timeline. Trials without edges get an empty event table.
@@ -2620,8 +2398,8 @@ try
         backupFolder = [transaction '_previous'];
         mkdir(backupFolder);
         % Remove the previous completion marker before changing any data.
-        for index = find(existing)
-            name = backupNames{index};
+        for iEntry = find(existing)
+            name = backupNames{iEntry};
             [ok,message] = movefile(fullfile(outputFolder,name),fullfile(backupFolder,name));
             assert(ok,'%s',message);
             backedUp{end+1} = name;
@@ -2629,45 +2407,36 @@ try
     end
     % Publish the new completion marker LAST.
     publishNames = [exportNames(2:end), exportNames(1)];
-    for index = 1:numel(publishNames)
-        name = publishNames{index};
+    for iEntry = 1:numel(publishNames)
+        name = publishNames{iEntry};
         [ok,message] = movefile(fullfile(stagingFolder,name),fullfile(outputFolder,name));
         assert(ok,'%s',message);
         promoted{end+1} = name;
     end
 catch exception
     % Move new files back to staging, then restore old files and marker.
-    for index = numel(promoted):-1:1
-        name = promoted{index};
+    for iEntry = numel(promoted):-1:1
+        name = promoted{iEntry};
         [ok,message] = movefile(fullfile(outputFolder,name),fullfile(stagingFolder,name));
         if ~ok, warning('Rollback failed for %s: %s',name,message); end
     end
-    for index = numel(backedUp):-1:1
-        name = backedUp{index};
+    for iEntry = numel(backedUp):-1:1
+        name = backedUp{iEntry};
         [ok,message] = movefile(fullfile(backupFolder,name),fullfile(outputFolder,name));
         if ~ok, warning('Restore failed for %s: %s',name,message); end
     end
     rethrow(exception)
 end
 % Only retire temporary exports after COMPLETE.json has been published.
-% Recognize this exporter's namespace and legacy MATLAB tempname folders.
 if overwrite
     entries = dir(outputFolder);
-    for index = find([entries.isdir])
-        name = entries(index).name;
+    for iEntry = find([entries.isdir])
+        name = entries(iEntry).name;
         owned = ~isempty(regexp(name,'^CRAPview_tmp_[A-Za-z0-9_-]+_(staging|previous)$','once'));
-        legacy = ~isempty(regexp(name,'^tp[0-9a-fA-F-]+_(staging|previous)$','once'));
-        if ~owned && ~legacy, continue; end
+        if ~owned, continue; end
         candidate = fullfile(outputFolder,name);
         candidateFile = java.io.File(candidate);
         if java.nio.file.Files.isSymbolicLink(candidateFile.toPath()), continue; end
-        if legacy
-            % Old folders had no CRAPview prefix. Check their contents before
-            % removing a directory that happens to match MATLAB's temp name.
-            content = dir(candidate);
-            items = setdiff({content.name},{'.','..'});
-            if ~all(ismember(items,backupNames) | startsWith(items,'TSeries')), continue; end
-        end
         rmdir(candidate,'s');
     end
 end
@@ -2690,9 +2459,9 @@ if isa(value,'function_handle')
     value = func2str(value);
 elseif isstruct(value)
     names = fieldnames(value);
-    for index = 1:numel(value)
-        for nameIndex = 1:numel(names)
-            value(index).(names{nameIndex}) = jsonSafe(value(index).(names{nameIndex}));
+    for iElement = 1:numel(value)
+        for iName = 1:numel(names)
+            value(iElement).(names{iName}) = jsonSafe(value(iElement).(names{iName}));
         end
     end
 elseif iscell(value)
@@ -2700,7 +2469,39 @@ elseif iscell(value)
 end
 end
 
-function videoInfo = writeTrialVideo(movie, relativeTime, filename, SET, color_label, source, boundaries, planeTitles)
+function limits = pooledMovieLimits(STACK,STACK_proc,trialNames)
+% Pool finite absolute dF/F values from every trial, plane, pixel and frame
+% in both MP4 sources. Preallocate the vector once for unequal trial sizes.
+stacks = {STACK,STACK_proc};
+count = 0;
+for iStack = 1:numel(stacks)
+    for iTrial = 1:numel(trialNames)
+        movie = stacks{iStack}.(trialNames{iTrial});
+        count = count + nnz(isfinite(movie));
+    end
+end
+
+values = zeros(count,1);
+offset = 0;
+for iStack = 1:numel(stacks)
+    for iTrial = 1:numel(trialNames)
+        movie = stacks{iStack}.(trialNames{iTrial});
+        amplitudes = abs(movie(isfinite(movie)));
+        values(offset+1:offset+numel(amplitudes)) = amplitudes;
+        offset = offset + numel(amplitudes);
+    end
+end
+
+% MATLAB requires distinct display limits when the percentile is zero
+% or there are no finite values.
+limits = [-1 1];
+if count>0
+    max_val = quantile(values,0.999);
+    if max_val>0, limits = [-1 1]*max_val; end
+end
+end
+
+function videoInfo = writeTrialVideo(movie, relativeTime, filename, SET, color_label, source, boundaries, planeTitles, movieLimits)
 % Use the median volume interval for playback and recorded times for frame titles.
 numberOfPlanes = size(movie,3);
 numberOfFrames = size(movie,4);
@@ -2713,49 +2514,36 @@ if numberOfFrames > 1
 else
     frameRate = 1;
 end
-% Estimate each plane's 1st/99th percentiles across space and time.
-% Compute once so that brightness does not rescale between frames.
-limits = zeros(numberOfPlanes,2);
-for planeIndex = 1:numberOfPlanes
-    planeMovie = movie(:,:,planeIndex,:);
-    stride = max(1,ceil(numel(planeMovie)/1e6));
-    samples = planeMovie(1:stride:end);
-    samples = samples(isfinite(samples));
-    if ~isempty(samples)
-        samples = quantile(samples(:),[0.01 0.99]);
-    end
-    limits(planeIndex,:) = symmetricLimits(samples);
-end
-clear planeMovie samples
-
-figureHandle = figure('Color','w','Units','normalized', ...
-    'Position',[0 0 1 1],'Resize','off','MenuBar','none','ToolBar','none');
+% Every trial, plane and movie type uses the same pooled dF/F scale.
+figureHandle = figure('Color','w','Units','pixels', ...
+    'Position',[100 100 1200 800],'Resize','off','MenuBar','none',...
+    'ToolBar','none', 'Visible','off');
 figureCleanup = onCleanup(@() deleteVideoFigure(figureHandle)); %#ok<NASGU>
 layout = tiledlayout(figureHandle,'flow','TileSpacing','compact','Padding','compact');
 imageHandles = gobjects(numberOfPlanes,1);
-for planeIndex = 1:numberOfPlanes
+for iPlane = 1:numberOfPlanes
     axesHandle = nexttile(layout);
-    imageHandles(planeIndex) = imagesc(axesHandle,movie(:,:,planeIndex,1),limits(planeIndex,:));
+    imageHandles(iPlane) = imagesc(axesHandle,movie(:,:,iPlane,1),movieLimits);
     axis(axesHandle,'image');
     axis(axesHandle,'off');
     % These lines stay fixed while only the image CData changes each frame.
-    drawRegionEdges(axesHandle,boundaries{planeIndex});
-    title(axesHandle,planeTitles{planeIndex});
+    drawRegionEdges(axesHandle,boundaries{iPlane});
+    title(axesHandle,planeTitles{iPlane});
     colorbarHandle = colorbar(axesHandle);
     colorbarHandle.Label.String = color_label;
 end
 colormap(figureHandle, SET.colmap);
-video = VideoWriter(filename,'MPEG-4');
+video = VideoWriter(filename,'Motion JPEG AVI');
 video.FrameRate = frameRate;
 video.Quality = 95;
 open(video);
 videoCleanup = onCleanup(@() close(video));
-for frameIndex = 1:numberOfFrames
-    for planeIndex = 1:numberOfPlanes
-        imageHandles(planeIndex).CData = movie(:,:,planeIndex,frameIndex);
+for iFrame = 1:numberOfFrames
+    for iPlane = 1:numberOfPlanes
+        imageHandles(iPlane).CData = movie(:,:,iPlane,iFrame);
     end
     title(layout,sprintf('Time: %.2f s | Frame %d/%d', ...
-        frameTimes(frameIndex),frameIndex,numberOfFrames));
+        frameTimes(iFrame),iFrame,numberOfFrames));
     drawnow;
     writeVideo(video,getframe(figureHandle));
 end
@@ -2765,8 +2553,8 @@ videoInfo.filename = [videoName extension];
 videoInfo.source = source;
 videoInfo.segmentation_outlines = any(~cellfun(@isempty,boundaries));
 videoInfo.units = 'fractional dF/F';
-videoInfo.color_limits = limits; % One row [lower upper] per plane.
-videoInfo.color_limits_method = 'Symmetric about zero using the larger absolute sampled 1st/99th percentile per plane, fixed across frames.';
+videoInfo.color_limits = repmat(movieLimits,numberOfPlanes,1); % One row [lower upper] per plane.
+videoInfo.color_limits_method = '99th percentile of finite absolute dF/F pooled over all trials and both movie stacks for this animal; symmetric limits, with [-1 1] for a zero or undefined percentile.';
 videoInfo.frame_rate_hz = frameRate;
 videoInfo.frame_count = numberOfFrames;
 videoInfo.timing = 'Constant-rate playback using median volume interval; title shows recorded time.';
@@ -2780,10 +2568,10 @@ function edges = regionEdges(labels)
 % disconnected components. NaN separators keep unrelated contours apart.
 ids = unique(labels(labels>0));
 parts = cell(numel(ids),1);
-for i = 1:numel(ids)
-    contours = bwboundaries(labels==ids(i),8,'TraceStyle','pixeledge');
+for iRegion = 1:numel(ids)
+    contours = bwboundaries(labels==ids(iRegion),8,'TraceStyle','pixeledge');
     contours = cellfun(@(rc) [rc; rc(1,:); NaN NaN],contours,'UniformOutput',false);
-    parts{i} = vertcat(contours{:});
+    parts{iRegion} = vertcat(contours{:});
 end
 edges = vertcat(parts{:});
 end
@@ -2792,7 +2580,7 @@ function drawRegionEdges(ax,edges)
 % Boundary coordinates are (row,column); plot in image (x,y) coordinates.
 if isempty(edges), return; end
 hold(ax,'on');
-plot(ax,edges(:,2),edges(:,1),'w','LineWidth',0.5);
+plot(ax,edges(:,2),edges(:,1),'k','LineWidth',1);
 end
 
 function titles = exportPlaneTitles(SET,n)
@@ -2810,10 +2598,10 @@ else
 end
 end
 
-function pdfInfo = writeTrialPDFs(trial,processed,segmentation,q,boundaries,SET,folder,trialName,planeTitles)
-% Each PDF has one tile per output plane. Only the segmentation view adds IDs.
-pdfInfo.std_projection = [trialName '_pixel_dff_std.pdf'];
-pdfInfo.segmentation = [trialName '_segmentation.pdf'];
+function pdfInfo = writeTrialPDFs(trial,processed,segmentation,boundaries,SET,folder,trialName,planeTitles)
+% Each PDF has one tile per output plane. The average projection also shows region IDs.
+pdfInfo.std_projection = [trialName '_projection_std.pdf'];
+pdfInfo.avg_projection = [trialName '_projection_avg.pdf'];
 pdfInfo.std_source = 'Temporal sample SD of pixelwise dF/F, omitting NaNs';
 sd = std(trial,0,4,'omitnan');
 pdfInfo.std_color_limits = writePlanePDF(sd,boundaries,[],SET.colmap,folder, ...
@@ -2821,21 +2609,15 @@ pdfInfo.std_color_limits = writePlanePDF(sd,boundaries,[],SET.colmap,folder, ...
 pdfInfo.std_color_limits_method = 'Symmetric about zero using the largest absolute finite value per plane.';
 pdfInfo.std_colormap = jsonSafe(SET.colmap);
 
-% Show anatomical labels on unbinned registered fluorescence when available.
-if isstruct(q) && isfield(q,'meanImage')
-    anatomy = cat(3,q.meanImage);
-    units = 'Mean registered fluorescence';
-else
-    anatomy = mean(trial,4,'omitnan');
-    units = 'Mean pixelwise dF/F';
-end
+% Average each pixel across frames on the same dF/F scale as the SD projection.
+avg = mean(trial,4,'omitnan');
 if isempty(SET.segmentation_method), segmentation = []; end
-pdfInfo.segmentation_color_limits = writePlanePDF(anatomy,boundaries,segmentation,SET.colmap,folder, ...
-    pdfInfo.segmentation,trialName,units,planeTitles);
-pdfInfo.segmentation_source = units;
+pdfInfo.avg_source = 'Temporal mean of pixelwise dF/F, omitting NaNs';
+pdfInfo.avg_color_limits = writePlanePDF(avg,boundaries,segmentation,SET.colmap,folder, ...
+    pdfInfo.avg_projection,trialName,'Temporal mean of pixelwise dF/F',planeTitles);
 
-% Collapse only the time dimension of each normalized movie. Frame
-% exclusions and unusable baselines are already represented by NaNs.
+% Collapse only the time dimension of each normalized movie. Unusable
+% baselines are already represented by NaNs.
 pdfInfo.pixel_max_projection = [trialName '/' trialName '_pixel_dff_max.pdf'];
 pdfInfo.region_max_projection = [trialName '/' trialName '_region_dff_max.pdf'];
 pdfInfo.pixel_max_color_limits = writePlanePDF(max(trial,[],4,'omitnan'), ...
@@ -2862,24 +2644,24 @@ fig = figure('Color','w','Visible','off','Units','pixels','Position',[100 100 12
 cleanup = onCleanup(@() deleteVideoFigure(fig)); %#ok<NASGU>
 layout = tiledlayout(fig,ceil(n/cols),cols,'TileSpacing','compact','Padding','compact');
 limits = zeros(n,2);
-for z = 1:n
+for iPlane = 1:n
     ax = nexttile(layout);
-    limits(z,:) = symmetricLimits(images(:,:,z));
-    im = imagesc(ax,images(:,:,z),limits(z,:));
-    im.AlphaData = isfinite(images(:,:,z));
+    limits(iPlane,:) = symmetricLimits(images(:,:,iPlane));
+    im = imagesc(ax,images(:,:,iPlane),limits(iPlane,:));
+    im.AlphaData = isfinite(images(:,:,iPlane));
     axis(ax,'image'); axis(ax,'off');
-    drawRegionEdges(ax,boundaries{z});
+    drawRegionEdges(ax,boundaries{iPlane});
     if ~isempty(labelPlanes)
-        labels = labelPlanes(z).pockets_labeled;
+        labels = labelPlanes(iPlane).pockets_labeled;
         ids = unique(labels(labels>0));
         if numel(ids)<=100
-            for id = ids(:)'
-                [rows,colsInROI] = find(labels==id);
-                text(ax,mean(colsInROI),mean(rows),num2str(id),'Color','w','HorizontalAlignment','center');
+            for iRegionID = ids(:)'
+                [rows,colsInROI] = find(labels==iRegionID);
+                text(ax,mean(colsInROI),mean(rows),num2str(iRegionID),'Color','w','HorizontalAlignment','center');
             end
         end
     end
-    title(ax,planeTitles{z});
+    title(ax,planeTitles{iPlane});
     cb = colorbar(ax); cb.Label.String = units;
 end
 colormap(fig,cmap);
@@ -2896,8 +2678,8 @@ end
 function writeStackHDF5(filename, stacks, groupName, processingNote, units)
 % Preserve every field's values, datatype, and four-dimensional shape.
 stackNames = fieldnames(stacks);
-for stackIndex = 1:numel(stackNames)
-    name = stackNames{stackIndex};
+for iStack = 1:numel(stackNames)
+    name = stackNames{iStack};
     data = stacks.(name);
     assert(isnumeric(data) && isreal(data) && ~issparse(data) && ...
         ~isempty(data) && ndims(data)<=4, ...
@@ -2915,3 +2697,4 @@ for stackIndex = 1:numel(stackNames)
     h5writeatt(filename,dataset,'units',units);
 end
 end
+

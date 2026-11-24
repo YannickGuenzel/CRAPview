@@ -62,7 +62,7 @@ SET.Affine_tformType = 'affine';                                           % 'af
 % Set whether to correct for motion using NoRMCorre with standard settings.
 SET.NonrigidCorrectMotion = true;
 % Set for how may iterations NoRMCorre should run
-SET.NoRMCorre_iter = 5;
+SET.NoRMCorre_iter = 3;
 % More detailed settings for non-rigid motion correction. If the data are
 % single-plane recordings, the third value will  be dropped automatically
 SET.NoRMCorre_gridSize       = [32, 32, 4];
@@ -90,8 +90,8 @@ SET.SmoothData_spat = [3 1];
 % Hz (e.g., SET.SmoothData_temp = [4, 1] for a 4th order filter with a 1Hz
 % cutt-off.
 % Set SmoothData_temp_type=[]; to skip temporal smoothing
-SET.SmoothData_temp_type = 'butter';                                       % 'movmean' or 'movmedian' or 'butter'
-SET.SmoothData_temp = [4 0.4];
+SET.SmoothData_temp_type = 'movmean';                                       % 'movmean' or 'movmedian' or 'butter'
+SET.SmoothData_temp = 3;
 
 % Set the nth-degree polynomial trend to remove from each pixel's signal.
 % Set SET.Detrend to 1 for a linear trend, 2 for a quadratic trend, or a
@@ -105,7 +105,7 @@ SET.Detrend = 0;
 
 % Set whether the individual planes of a volume should be compressed to a
 % single plane using a maximum projection
-SET.max_compression = false;
+SET.max_compression = true;
 SET.max_compression_planes = 8;
 
 % Set which segmentation approach to take. Choose CalciSeg for most
@@ -128,16 +128,12 @@ SET.dFF_value = [5 20];
 SET.TriggerEdge = 'rising';        % 'rising' or 'falling'
 SET.TriggerIndex = 1;
 SET.VoltageTimeOffset = 0;
-SET.MinBaseline = 0;               % Minimum usable absolute F0, in fluorescence units.
-SET.MinBaselineFraction = 0.01;    % Also flag F0 below 1% of the typical plane F0.
-SET.MinBaselineFrames = 1;
 
 % Embed each acquired frame using segmented dF/F traces pooled across trials.
 SET.FramePCA = true;
 
 % Set nice colors
 SET.colmap = 'RdBu';   % BrewerMap
-
 SET.TrialColors = [];  % MATLAB color order (SET.TrialColors = [];), or a BrewerMap name such as 'Set2'.
 
 % Record the seed used at the segmentation call for each animal.
@@ -156,7 +152,7 @@ if strcmp(SET.segmentation_method, 'CalciSeg')
     SET.segmentation_settings.projection_method = 'std';
     SET.segmentation_settings.init_seg_method = 'rICA';
     SET.segmentation_settings.detrend = 'dff';
-    SET.segmentation_settings.n_PCA = 95;
+    SET.segmentation_settings.n_PCA = 99;
     SET.segmentation_settings.n_rep = 5;
     SET.segmentation_settings.refinement_method = 'rmse';
     SET.segmentation_settings.limitPixCount = [9 inf];
@@ -185,13 +181,10 @@ addpath(genpath([SET.GithubPath, 'CalciSeg']))
 % --- https://github.com/altmany/export_fig
 addpath(genpath([SET.GithubPath, 'export_fig']))
 
-% Validate trigger selection and baseline settings.
+% Validate trigger selection.
 validateattributes(SET.TriggerIndex, {'numeric'}, {'scalar', 'positive', 'integer'});
 SET.TriggerEdge = validatestring(SET.TriggerEdge, {'rising', 'falling'});
 validateattributes(SET.VoltageTimeOffset, {'numeric'}, {'scalar', 'real', 'finite'});
-validateattributes(SET.MinBaseline, {'numeric'}, {'scalar', 'real', 'finite', 'nonnegative'});
-validateattributes(SET.MinBaselineFraction, {'numeric'}, {'scalar', 'real', 'finite', '>=', 0, '<=', 1});
-validateattributes(SET.MinBaselineFrames, {'numeric'}, {'scalar', 'positive', 'integer'});
 
 % Record external toolbox entry points once per batch.
 SET.codeFiles = struct();
@@ -403,7 +396,7 @@ for iAni = 1:size(curr.dir.all, 1)
                 rng(SET.RandomSeed,'twister');
                 [STACK_proc, Segmentation] = segmentImages(STACK, SET);
 
-                % Save measured region F and its actual F0 before normalizing either movie.
+                % Normalize the pixel and region movies and retain the measured region fluorescence.
                 stage = "baseline and normalization";
                 [STACK,STACK_proc,Segmentation,QC,SET] = normalizeTrials(STACK,STACK_proc,Segmentation,QC,SET);
 
@@ -586,8 +579,7 @@ if tooShort, S.Detrend = 0; end
 end
 
 function [STACK,processed,seg,QC,SET] = normalizeTrials(STACK,processed,seg,QC,SET)
-% Select baseline samples per plane. Retain the fluorescence and denominator
-% used for each ROI before overwriting the two movie arrays with dF/F.
+% Select baseline samples per plane and retain measured region fluorescence.
 for iTrial = 1:SET.N
     name = SET.trial_names_clean{iTrial};
     value = SET.dFF_value;
@@ -630,13 +622,7 @@ for iTrial = 1:SET.N
         % Normalize pixels using only finite samples in the selected interval.
         mask = SET.STACK_mask.(name)(:,:,iPlane);
         pixels = reshape(STACK.(name)(:,:,iPlane,:),[],n);
-        [f0,~,usable,floorValue] = baselineValues(pixels,keep,SET);
-        validMap = reshape(usable,size(mask)) & mask;
-        QC.(name).planes(iPlane).pixelBaselineValid = validMap;
-        QC.(name).planes(iPlane).pixelBaselineSummary = struct('valid',nnz(validMap), ...
-            'invalid',nnz(mask & ~validMap),'minimum_abs_F0',floorValue,'candidate_frames',nnz(keep),'window_fallback',fallback);
-        denom = abs(f0); denom(~usable) = NaN;
-        dff = (pixels-f0)./denom;
+        dff = normalizeFluorescence(pixels,keep,SET);
         STACK.(name)(:,:,iPlane,:) = reshape(dff,size(mask,1),size(mask,2),1,n);
 
         % Normalize each segmentation time course using its own fluorescence baseline.
@@ -644,11 +630,7 @@ for iTrial = 1:SET.N
         if isscalar(summary) && isfield(summary,'avgTCs')
             traces = summary.avgTCs;
             assert(size(traces,2)==n,'Segmentation frame count differs for %s plane %d.',name,iPlane);
-            [segF0,~,segUsable] = baselineValues(traces,keep,SET,floorValue);
-            denominator = abs(segF0);
-            denominator(~segUsable) = NaN;
-            summary.avgTCs = (traces-segF0)./denominator;
-            summary.avgTCs_F0 = segF0;
+            [summary.avgTCs,summary.avgTCs_F0] = normalizeFluorescence(traces,keep,SET);
             seg.(name)(iPlane).summary_stats = summary;
         end
 
@@ -662,27 +644,20 @@ for iTrial = 1:SET.N
         [~,rows] = ismember(presentIDs,ids);
         F(rows,:) = regionMovie(measuredPixels(first),:);
         % Broadcast each region's normalized trace only onto measured pixels.
-        [f0,count,usable] = baselineValues(F,keep,SET,floorValue);
-        denom = abs(f0); denom(~usable) = NaN;
-        regionDff = (F-f0)./denom;
+        regionDff = normalizeFluorescence(F,keep,SET);
         [~,idx] = ismember(labels(:),ids);
         regionMovie = regionDff(idx,:);
         regionMovie(~mask(:),:) = NaN;
         processed.(name)(:,:,iPlane,:) = reshape(regionMovie,size(mask,1),size(mask,2),1,n);
         QC.(name).planes(iPlane).fluorescence = F;
-        low = isfinite(f0) & abs(f0)<=floorValue;
-        QC.(name).planes(iPlane).baselines = table((1:numel(ids))',ids,f0,count,low,usable, ...
-            repmat(fallback,numel(ids),1),repmat(floorValue,numel(ids),1),'VariableNames',{'trace_row','region_id','F0', ...
-            'valid_baseline_frames','low_baseline','usable','window_fallback','minimum_abs_F0'});
     end
 end
 end
 
-function [f0,count,usable,floorValue] = baselineValues(F,keep,SET,floorValue)
+function [dff,f0] = normalizeFluorescence(F,keep,SET)
 % Evaluate the requested estimator on finite samples and retain its denominator.
 samples = F(:,keep);
 samples(~isfinite(samples)) = NaN;
-count = sum(isfinite(samples),2);
 if isempty(samples)
     f0 = nan(size(F,1),1);
 elseif strcmp(SET.dFF_type,'quantile')
@@ -690,18 +665,14 @@ elseif strcmp(SET.dFF_type,'quantile')
 else
     f0 = mean(samples,2,'omitnan');
 end
-% Use the same plane-specific floor for pixel and region baselines.
-if nargin<4
-    scale = abs(f0(isfinite(f0) & f0~=0 & count>=SET.MinBaselineFrames));
-    floorValue = SET.MinBaseline;
-    if ~isempty(scale), floorValue = max(floorValue,SET.MinBaselineFraction*median(scale)); end
-end
-usable = isfinite(f0) & abs(f0)>floorValue & count>=SET.MinBaselineFrames;
+denom = abs(f0);
+denom(denom==0 | ~isfinite(denom)) = NaN;
+dff = (F-f0)./denom;
 end
 
 function writeSliceQC(q,labels,regions,dff,folder,trialName,plane,planeTitle,cmap,times)
 % Link each anatomical slice and trace row with the same label and slice ID.
-fig = figure('Visible','off','Color','w','Position',[100 100 1200 800]);
+fig = figure('Units','normalized','Position',[0 0 1 1],'Visible','off','Color','w');
 cleanup = onCleanup(@() deleteVideoFigure(fig)); %#ok<NASGU>
 layout = tiledlayout(fig,1,2);
 ax = nexttile(layout);
@@ -2028,7 +1999,7 @@ if size(PCA.score,2)<2, return; end
 
 % Use MATLAB's axes color order unless a BrewerMap palette was selected.
 nTrials = numel(SET.trial_names_clean);
-fig = figure('Color','w', 'Units','pixels','Position',[100 100 1200 800]);
+fig = figure('Units','normalized','Position',[0 0 1 1],'Visible','off','Color','w');
 ax = axes(fig);
 hold(ax,'on');
 if ~isempty(SET.TrialColors)
@@ -2062,11 +2033,11 @@ function outputFolder = saveCRAPview(STACK, STACK_proc, Segmentation, SET, outpu
 % Each trial/plane folder contains label and timing tables plus two traces:
 % mean_pixel_dff.csv averages normalized pixels, while region_dff.csv
 % reports the normalized region mean. Both use fractional dF/F.
-% pixel_dff.h5 and region_dff.h5 store the complete movies. Trial MP4s and
-% maximum PDFs are written inside each trial folder. Other summary PDFs,
+% pixel_dff.h5 and region_dff.h5 store the complete movies. Trial AVIs and projection PDFs
+% are written inside each trial folder. The pooled frame PCA PDF,
 % results.mat and metadata.json are written at the animal level.
 % SET records the requested baseline and each trial's effective setting.
-% Quality stores actual ROI baselines, spatial masks and anatomical mean images.
+% Quality stores measured ROI fluorescence, spatial masks and anatomical mean images.
 % Per-plane QC tables and manual-slice overlay/heatmap PDFs accompany the traces.
 % On overwrite, the prior export is backed up until publication. COMPLETE.json
 % is published after all current data files have been moved into place.
@@ -2102,22 +2073,19 @@ channel = lockFile.getChannel();
 lock = channel.tryLock();
 assert(~isempty(lock),'Another CRAPview export is active in %s.',outputFolder);
 
-% Check MPEG-4 and PDF export support before writing trial data.
+% Check Motion JPEG AVI and PDF export support before writing trial data.
 profiles = VideoWriter.getProfiles();
 assert(any(strcmp({profiles.Name},'Motion JPEG AVI')), ...
     'This MATLAB installation does not support Motion JPEG AVI video export.');
 assert(exist('export_fig','file') ~= 0, 'Add export_fig to the MATLAB path.');
 
-% Name both movies and the two PDF summaries for each trial.
 trialNames = SET.trial_names_clean(:)';
 namesWithSuffix = @(names,suffix) cellfun(@(name) [name suffix],names,'UniformOutput',false);
-stdProjectionNames = namesWithSuffix(trialNames,'_projection_std.pdf');
-avgProjectionNames = namesWithSuffix(trialNames,'_projection_avg.pdf');
 
 % Publish only the current trials and format. Keep the completion marker
 % first here so it can be backed up first and published last.
 exportNames = [{'COMPLETE.json','results.mat','pixel_dff.h5','region_dff.h5','metadata.json'}, ...
-    trialNames, stdProjectionNames, avgProjectionNames];
+    trialNames];
 
 % Publish the score table for every successful fit and a plot for rank >= 2.
 if strcmp(PCA.status,'complete')
@@ -2182,9 +2150,8 @@ metadata.csv_matrix_orientation = 'rows=regions, columns=timepoints; no header';
 metadata.labels_orientation = 'rows=image rows, columns=image columns; no header';
 metadata.time_units = 'seconds';
 metadata.dff_units = 'fraction, not percent';
-metadata.baseline_qc = 'F0 and finite-sample counts are computed during normalization. Minimum absolute F0 is the larger of the configured absolute and relative floors.';
-metadata.dff_formula = '(F - F0) / abs(F0); unusable F0 gives NaN';
-metadata.quality = 'results.mat Quality contains spatial registration masks, anatomical images and measured baseline diagnostics.';
+metadata.dff_formula = '(F - F0) / abs(F0); zero or nonfinite F0 gives NaN';
+metadata.quality = 'results.mat Quality contains spatial registration masks, anatomical images and measured ROI fluorescence.';
 metadata.roi_fluorescence = 'roi_fluorescence.csv contains F entering normalization.';
 metadata.registration_mask = 'Common measured support over frames; excludes affine fill and conservative nonrigid margins.';
 metadata.pixel_dff = 'STACK: normalize each pixel using its own fluorescence baseline.';
@@ -2288,14 +2255,11 @@ for iTrial = 1:numel(trialNames)
         Traces.(trialName)(iPlane).region_dff = regionDff;
         Traces.(trialName)(iPlane).imaging_times = timing;
 
-        % Save the measured fluorescence and F0 alongside the
+        % Save the measured fluorescence alongside the
         % normalized traces, using the same trace rows and frame numbers.
         if isfield(Quality,trialName)
             q = Quality.(trialName).planes(iPlane);
-            writetable(q.baselines,fullfile(planeFolder,'baseline_qc.csv'));
-            writeJSON(fullfile(planeFolder,'pixel_baseline_summary.json'),q.pixelBaselineSummary);
             writematrix(q.fluorescence,fullfile(planeFolder,'roi_fluorescence.csv'));
-            writematrix(q.pixelBaselineValid,fullfile(planeFolder,'pixel_baseline_valid.csv'));
             writematrix(SET.STACK_mask.(trialName)(:,:,iPlane),fullfile(planeFolder,'registration_valid.csv'));
             if strcmp(SET.segmentation_method,'manualSliceSeg')
                 writeSliceQC(q,labels,regions,regionDff,trialFolder,trialName,iPlane,planeTitles{iPlane},SET.colmap,timing.relative_time_s);
@@ -2310,24 +2274,24 @@ for iTrial = 1:numel(trialNames)
             boundaries{iPlane} = regionEdges(Segmentation.(trialName)(iPlane).pockets_labeled);
         end
     end
-    metadata.pdfs.(trialName) = writeTrialPDFs(trial,processed,Segmentation.(trialName), ...
+    metadata.pdfs.(trialName) = writeTrialPDFs(trial,processed, ...
         boundaries,SET,stagingFolder,trialName,planeTitles);
 
     if isfield(Quality,trialName) && strcmp(SET.segmentation_method,'manualSliceSeg')
         metadata.pdfs.(trialName).slice_qc = [trialName '/slice_qc.pdf'];
     end
 
-    % Both MP4s use the same time base and plane labels. Only the pixelwise
-    % movie overlays segmentation boundaries. Paths in metadata are relative.
-    pixelVideo = [trialName '/' trialName '_pixel_dff.mp4'];
-    regionVideo = [trialName '/' trialName '_region_dff.mp4'];
+    % Both AVIs use the same time base, plane labels and segmentation outlines.
+    % Paths in metadata are relative.
+    pixelVideo = [trialName '/' trialName '_dff_pixel.avi'];
+    regionVideo = [trialName '/' trialName '_dff_region.avi'];
     metadata.pixel_dff_videos.(trialName) = writeTrialVideo(trial, ...
         trialSettings.relativeTime,fullfile(stagingFolder,pixelVideo), ...
         SET,'Pixelwise dF/F (fraction)','STACK',boundaries,planeTitles,movieLimits);
     metadata.pixel_dff_videos.(trialName).filename = pixelVideo;
     metadata.region_dff_videos.(trialName) = writeTrialVideo(processed, ...
         trialSettings.relativeTime,fullfile(stagingFolder,regionVideo), ...
-        SET,'Region dF/F (fraction)','STACK_proc',cell(size(boundaries)),planeTitles,movieLimits);
+        SET,'Region dF/F (fraction)','STACK_proc',boundaries,planeTitles,movieLimits);
     metadata.region_dff_videos.(trialName).filename = regionVideo;
 
     % Combine rising and falling trigger edges into one timeline. Trials without edges get an empty event table.
@@ -2471,7 +2435,7 @@ end
 
 function limits = pooledMovieLimits(STACK,STACK_proc,trialNames)
 % Pool finite absolute dF/F values from every trial, plane, pixel and frame
-% in both MP4 sources. Preallocate the vector once for unequal trial sizes.
+% in both AVI sources. Preallocate the vector once for unequal trial sizes.
 stacks = {STACK,STACK_proc};
 count = 0;
 for iStack = 1:numel(stacks)
@@ -2515,9 +2479,7 @@ else
     frameRate = 1;
 end
 % Every trial, plane and movie type uses the same pooled dF/F scale.
-figureHandle = figure('Color','w','Units','pixels', ...
-    'Position',[100 100 1200 800],'Resize','off','MenuBar','none',...
-    'ToolBar','none', 'Visible','off');
+figureHandle = figure('Units','normalized','Position',[0 0 1 1],'Visible','off','Color','w','Resize','off','MenuBar','none','ToolBar','none');
 figureCleanup = onCleanup(@() deleteVideoFigure(figureHandle)); %#ok<NASGU>
 layout = tiledlayout(figureHandle,'flow','TileSpacing','compact','Padding','compact');
 imageHandles = gobjects(numberOfPlanes,1);
@@ -2547,7 +2509,7 @@ for iFrame = 1:numberOfFrames
     drawnow;
     writeVideo(video,getframe(figureHandle));
 end
-clear videoCleanup % Finalize the MP4 before publishing the export.
+clear videoCleanup % Finalize the AVI before publishing the export.
 [~,videoName,extension] = fileparts(filename);
 videoInfo.filename = [videoName extension];
 videoInfo.source = source;
@@ -2598,33 +2560,32 @@ else
 end
 end
 
-function pdfInfo = writeTrialPDFs(trial,processed,segmentation,boundaries,SET,folder,trialName,planeTitles)
-% Each PDF has one tile per output plane. The average projection also shows region IDs.
-pdfInfo.std_projection = [trialName '_projection_std.pdf'];
-pdfInfo.avg_projection = [trialName '_projection_avg.pdf'];
+function pdfInfo = writeTrialPDFs(trial,processed,boundaries,SET,folder,trialName,planeTitles)
+% Each PDF has one tile per output plane.
+pdfInfo.std_projection = [trialName '/' trialName '_projection_std.pdf'];
+pdfInfo.avg_projection = [trialName '/' trialName '_projection_avg.pdf'];
 pdfInfo.std_source = 'Temporal sample SD of pixelwise dF/F, omitting NaNs';
 sd = std(trial,0,4,'omitnan');
-pdfInfo.std_color_limits = writePlanePDF(sd,boundaries,[],SET.colmap,folder, ...
+pdfInfo.std_color_limits = writePlanePDF(sd,boundaries,SET.colmap,folder, ...
     pdfInfo.std_projection,trialName,'Temporal SD of pixelwise dF/F',planeTitles);
 pdfInfo.std_color_limits_method = 'Symmetric about zero using the largest absolute finite value per plane.';
 pdfInfo.std_colormap = jsonSafe(SET.colmap);
 
 % Average each pixel across frames on the same dF/F scale as the SD projection.
 avg = mean(trial,4,'omitnan');
-if isempty(SET.segmentation_method), segmentation = []; end
 pdfInfo.avg_source = 'Temporal mean of pixelwise dF/F, omitting NaNs';
-pdfInfo.avg_color_limits = writePlanePDF(avg,boundaries,segmentation,SET.colmap,folder, ...
+pdfInfo.avg_color_limits = writePlanePDF(avg,boundaries,SET.colmap,folder, ...
     pdfInfo.avg_projection,trialName,'Temporal mean of pixelwise dF/F',planeTitles);
 
 % Collapse only the time dimension of each normalized movie. Unusable
 % baselines are already represented by NaNs.
-pdfInfo.pixel_max_projection = [trialName '/' trialName '_pixel_dff_max.pdf'];
-pdfInfo.region_max_projection = [trialName '/' trialName '_region_dff_max.pdf'];
+pdfInfo.pixel_max_projection = [trialName '/' trialName '_projection_max.pdf'];
+pdfInfo.region_max_projection = [trialName '/' trialName '_projection_max_region.pdf'];
 pdfInfo.pixel_max_color_limits = writePlanePDF(max(trial,[],4,'omitnan'), ...
-    boundaries,[],SET.colmap,folder,pdfInfo.pixel_max_projection,trialName, ...
+    boundaries,SET.colmap,folder,pdfInfo.pixel_max_projection,trialName, ...
     'Temporal maximum of pixelwise dF/F',planeTitles);
 pdfInfo.region_max_color_limits = writePlanePDF(max(processed,[],4,'omitnan'), ...
-    cell(size(boundaries)),[],SET.colmap,folder,pdfInfo.region_max_projection,trialName, ...
+    boundaries,SET.colmap,folder,pdfInfo.region_max_projection,trialName, ...
     'Temporal maximum of region dF/F',planeTitles);
 end
 
@@ -2636,11 +2597,11 @@ if isempty(extent) || extent==0, extent = 1; end
 limits = [-extent extent];
 end
 
-function limits = writePlanePDF(images,boundaries,labelPlanes,cmap,folder,filename,trialName,units,planeTitles)
+function limits = writePlanePDF(images,boundaries,cmap,folder,filename,trialName,units,planeTitles)
 % Draw intensity and geometric overlays on the same pixel coordinates.
 n = size(images,3);
 cols = ceil(sqrt(n));
-fig = figure('Color','w','Visible','off','Units','pixels','Position',[100 100 1200 800]);
+fig = figure('Units','normalized','Position',[0 0 1 1],'Visible','off','Color','w');
 cleanup = onCleanup(@() deleteVideoFigure(fig)); %#ok<NASGU>
 layout = tiledlayout(fig,ceil(n/cols),cols,'TileSpacing','compact','Padding','compact');
 limits = zeros(n,2);
@@ -2651,16 +2612,6 @@ for iPlane = 1:n
     im.AlphaData = isfinite(images(:,:,iPlane));
     axis(ax,'image'); axis(ax,'off');
     drawRegionEdges(ax,boundaries{iPlane});
-    if ~isempty(labelPlanes)
-        labels = labelPlanes(iPlane).pockets_labeled;
-        ids = unique(labels(labels>0));
-        if numel(ids)<=100
-            for iRegionID = ids(:)'
-                [rows,colsInROI] = find(labels==iRegionID);
-                text(ax,mean(colsInROI),mean(rows),num2str(iRegionID),'Color','w','HorizontalAlignment','center');
-            end
-        end
-    end
     title(ax,planeTitles{iPlane});
     cb = colorbar(ax); cb.Label.String = units;
 end

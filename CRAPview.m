@@ -43,7 +43,7 @@ parpool("Threads");
 SET.Channel = 'Ch2';
 
 % Path to GitHub folder
-SET.GithubPath = 'C:\Users\YannickOffice\Documents\GitHub\';
+SET.GithubPath = '...\GitHub\';
 
 % Volumetric data with a piezo can result in the first plane being off.
 % This setting allows you to remove it.
@@ -151,6 +151,7 @@ if strcmp(SET.segmentation_method, 'CalciSeg')
     SET.segmentation_settings.quiet = false;
     SET.segmentation_settings.projection_method = 'std';
     SET.segmentation_settings.init_seg_method = 'rICA';
+	SET.segmentation_settings.rICA_thresh = 20;
     SET.segmentation_settings.detrend = 'dff';
     SET.segmentation_settings.n_PCA = 99;
     SET.segmentation_settings.n_rep = 5;

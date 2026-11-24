@@ -43,7 +43,7 @@ parpool("Threads");
 SET.Channel = 'Ch2';
 
 % Path to GitHub folder
-SET.GithubPath = '...\GitHub\';
+SET.GithubPath = 'C:\Users\YannickOffice\Documents\GitHub\';
 
 % Volumetric data with a piezo can result in the first plane being off.
 % This setting allows you to remove it.
@@ -54,44 +54,44 @@ SET.dropTop = true;
 SET.CorrectMotion_pool = 'together';                                       % 'together' or 'template' or 'separate'
 
 % Affine motion registration before NoRMCorre.
-SET.AffineCorrectMotion = false;
-SET.Affine_iter = 10;
-SET.Affine_maxIter = 250;
-SET.Affine_tformType = 'affine';                                           % 'affine' or 'translation' or 'rigid" or 'similarity'
+SET.Affine.CorrectMotion = false;
+SET.Affine.iter = 10;
+SET.Affine.maxIter = 250;
+SET.Affine.tformType = 'affine';                                           % 'affine' or 'translation' or 'rigid" or 'similarity'
 
 % Set whether to correct for motion using NoRMCorre with standard settings.
 SET.NonrigidCorrectMotion = true;
 % Set for how may iterations NoRMCorre should run
-SET.NoRMCorre_iter = 3;
+SET.NoRMCorre.iter = 5;
 % More detailed settings for non-rigid motion correction. If the data are
 % single-plane recordings, the third value will  be dropped automatically
-SET.NoRMCorre_gridSize       = [32, 32, 4];
-SET.NoRMCorre_overlap_pre    = [24, 24, 2];
-SET.NoRMCorre_overlap_post   = [24, 24, 2];
-SET.NoRMCorre_mot_uf         = [04, 04, 1];
-SET.NoRMCorre_max_shift      = [24, 24, 2];
-SET.NoRMCorre_max_dev        = [08, 08, 1];
-SET.NoRMCorre_min_patch_size = [16, 16, 1];
+SET.NoRMCorre.gridSize       = [32, 32, 4];
+SET.NoRMCorre.overlap_pre    = [24, 24, 2];
+SET.NoRMCorre.overlap_post   = [24, 24, 2];
+SET.NoRMCorre.mot_uf         = [04, 04, 1];
+SET.NoRMCorre.max_shift      = [24, 24, 2];
+SET.NoRMCorre.max_dev        = [08, 08, 1];
+SET.NoRMCorre.min_patch_size = [16, 16, 1];
 % If the data is 3D, i.e., a volume over time, set whether the motion
 % correction should be done per plane (2D) or applied to the whole volume
 % at once (3D; this requires a lot of memory)
-SET.NoRMCorre_dim = '2D';                                                  % '2D' or '3D'
+SET.NoRMCorre.dim = '2D';                                                  % '2D' or '3D'
 
 % Set the standard deviation for 2D Gaussian filtering ('gauss'), box
 % size for 2D median filtering ('med'), or both [box, std] for
 % both ('med-gauss'), or vice versa for 'gauss-med'
-SET.SmoothData_spat_type = 'med-gauss';                                    % 'med' or 'gauss' or 'med-gauss' or 'gauss-med'
-SET.SmoothData_spat = [3 1];
+SET.SmoothData.spat_type = 'med-gauss';                                    % 'med' or 'gauss' or 'med-gauss' or 'gauss-med'
+SET.SmoothData.spat = [3 1];
 
 % Set whether to apply temporal filtering and which method to use.
 % Available approaches are: movmean, movmedian, or n-th order butterworth
 % low-pass filter. For movmean or movmedian specify a window length in
 % frames. For butterworth, specifiy filter order and cutt-off frequency in
-% Hz (e.g., SET.SmoothData_temp = [4, 1] for a 4th order filter with a 1Hz
+% Hz (e.g., SET.SmoothData.temp = [4, 1] for a 4th order filter with a 1Hz
 % cutt-off.
-% Set SmoothData_temp_type=[]; to skip temporal smoothing
-SET.SmoothData_temp_type = 'movmean';                                       % 'movmean' or 'movmedian' or 'butter'
-SET.SmoothData_temp = 3;
+% Set SmoothData.temp_type=[]; to skip temporal smoothing
+SET.SmoothData.temp_type = 'movmean';                                       % 'movmean' or 'movmedian' or 'butter'
+SET.SmoothData.temp = 3;
 
 % Set the nth-degree polynomial trend to remove from each pixel's signal.
 % Set SET.Detrend to 1 for a linear trend, 2 for a quadratic trend, or a
@@ -348,7 +348,7 @@ for iAni = 1:size(curr.dir.all, 1)
                 stage = "registration";
                 % Affine motion correction
                 % ---------------------------------------------------------
-                if SET.AffineCorrectMotion
+                if SET.Affine.CorrectMotion
                     [STACK,QC] = affinecorrectMotion(STACK, SET, QC);
                 end
 
@@ -562,8 +562,8 @@ end
 function S = shortTrialSettings(S,n)
 % filtfilt requires more than three filter orders. Polynomial fits require
 % more samples than the degree, and biexponential fitting needs four samples.
-if strcmp(S.SmoothData_temp_type,'butter') && n <= 3*S.SmoothData_temp(1)
-    S.SmoothData_temp_type = [];
+if strcmp(S.SmoothData.temp_type,'butter') && n <= 3*S.SmoothData.temp(1)
+    S.SmoothData.temp_type = [];
 end
 setting = S.Detrend;
 if isnumeric(setting)
@@ -858,8 +858,8 @@ function [STACK,QC] = affinecorrectMotion(STACK, SET, QC)
 %   separate - update an independent median for each trial.
 %   template - register trial 1 with an updated median, then register later
 %              trials against its fixed corrected median.
-% SET.Affine_iter    - outer iterations (default 10).
-% SET.Affine_maxIter - optimizer MaximumIterations (default 250).
+% SET.Affine.iter    - outer iterations (default 10).
+% SET.Affine.maxIter - optimizer MaximumIterations (default 250).
 % Optional SET.STACK_mask supplies spatial logical rectangular common masks,
 % as in correctMotion. Shared modes intersect these masks across trials.
 % Without STACK_mask, registration uses the full image.
@@ -871,11 +871,11 @@ function [STACK,QC] = affinecorrectMotion(STACK, SET, QC)
 % Pixels outside a selected crop retain their input values.
 % Requires Image Processing Toolbox. parfor can use Parallel Computing Toolbox.
 
-if ~isfield(SET,'Affine_iter'), SET.Affine_iter = 10; end
-if ~isfield(SET,'Affine_maxIter'), SET.Affine_maxIter = 250; end
-validateattributes(SET.Affine_iter, {'numeric'}, ...
+if ~isfield(SET,'Affine.iter'), SET.Affine.iter = 10; end
+if ~isfield(SET,'Affine.maxIter'), SET.Affine.maxIter = 250; end
+validateattributes(SET.Affine.iter, {'numeric'}, ...
     {'scalar','real','finite','integer','positive'});
-validateattributes(SET.Affine_maxIter, {'numeric'}, ...
+validateattributes(SET.Affine.maxIter, {'numeric'}, ...
     {'scalar','real','finite','integer','positive'});
 
 names = SET.trial_names_clean;
@@ -985,11 +985,11 @@ if ~isempty(reference)
 end
 
 [optimizer,metric] = imregconfig("multimodal");
-optimizer.MaximumIterations = SET.Affine_maxIter;
+optimizer.MaximumIterations = SET.Affine.maxIter;
 outputView = imref2d([nr nc]);
 [outX,outY] = meshgrid(1:nc,1:nr);
 support = true(nr,nc,nt);
-for iIteration = 1:SET.Affine_iter
+for iIteration = 1:SET.Affine.iter
     if isempty(reference)
         fixed = median(aligned,3);
     else
@@ -999,7 +999,7 @@ for iIteration = 1:SET.Affine_iter
     % Every fit uses the same iteration snapshot and fixed reference.
     current = aligned;
     next = zeros(size(current),'double');
-    tformType = SET.Affine_tformType;
+    tformType = SET.Affine.tformType;
     parfor iFrame = 1:nt
         tform = imregtform(current(:,:,iFrame),fixed, ...
             tformType,optimizer,metric);
@@ -1039,13 +1039,13 @@ end
 function [STACK,QC] = correctMotion(STACK, SET, QC)
 % Trials must be X-by-Y-by-Z-by-time arrays (at least two timepoints).
 % SET.CorrectMotion_pool: 'together', 'template', or 'separate'.
-% SET.NoRMCorre_dim: '2D' or '3D'. Outputs are double precision.
+% SET.NoRMCorre.dim: '2D' or '3D'. Outputs are double precision.
 % SET.STACK_mask: common rigid mask per trial used to select the registration crop.
 
 names = SET.trial_names_clean;
 assert(~isempty(names), 'No trials supplied.');
 mode = validatestring(SET.CorrectMotion_pool, {'separate','together','template'});
-use2D = strcmp(validatestring(SET.NoRMCorre_dim, {'2D','3D'}), '2D');
+use2D = strcmp(validatestring(SET.NoRMCorre.dim, {'2D','3D'}), '2D');
 input = STACK;
 inputMask = SET.STACK_mask;
 spatial = zeros(numel(names),3);
@@ -1168,18 +1168,18 @@ assert(nr >= 2 && nc >= 2,'Registration crop must span at least two rows and col
 % Non-rigid NoRMCorre parameters
 options = NoRMCorreSetParms(...
     'd1',nr,'d2',nc,'d3',nz, ...
-    'iter',SET.NoRMCorre_iter,...
+    'iter',SET.NoRMCorre.iter,...
     'print_msg',false,...
     'use_parallel',true, ...
     'upd_template',isempty(reference),...
     'boundary','copy', ...
-    'grid_size',axesParam(SET.NoRMCorre_gridSize,dim), ...
-    'overlap_pre',axesParam(SET.NoRMCorre_overlap_pre,dim), ...
-    'overlap_post',axesParam(SET.NoRMCorre_overlap_post,dim), ...
-    'mot_uf',axesParam(SET.NoRMCorre_mot_uf,dim), ...
-    'max_shift',axesParam(SET.NoRMCorre_max_shift,dim), ...
-    'min_patch_size', SET.NoRMCorre_min_patch_size, ...
-    'max_dev',axesParam(SET.NoRMCorre_max_dev,dim));
+    'grid_size',axesParam(SET.NoRMCorre.gridSize,dim), ...
+    'overlap_pre',axesParam(SET.NoRMCorre.overlap_pre,dim), ...
+    'overlap_post',axesParam(SET.NoRMCorre.overlap_post,dim), ...
+    'mot_uf',axesParam(SET.NoRMCorre.mot_uf,dim), ...
+    'max_shift',axesParam(SET.NoRMCorre.max_shift,dim), ...
+    'min_patch_size', SET.NoRMCorre.min_patch_size, ...
+    'max_dev',axesParam(SET.NoRMCorre.max_dev,dim));
 % Piecewise-rigid / non-rigid correction
 [aligned,shifts] = normcorre_batch(movie,options,reference);
 aligned = reshape(double(aligned),nr,nc,nz,nt);
@@ -1197,8 +1197,8 @@ end % FCN:axesParam
 function STACK = filterImages(STACK, SET)
 % Filter each XY image independently in X-by-Y-by-Z-by-time trial arrays.
 % sp: Gaussian sigma, median window width, or [median width, Gaussian sigma].
-smoothingParameters = SET.SmoothData_spat;
-filterType = SET.SmoothData_spat_type;
+smoothingParameters = SET.SmoothData.spat;
+filterType = SET.SmoothData.spat_type;
 
 for iTrial = 1:SET.N
     trialName = SET.trial_names_clean{iTrial};
@@ -1232,17 +1232,17 @@ for iTrial = 1:SET.N
     STACK.(trialName) = reshape(filteredImages, trialSize);
 end
 % Now, filter temporal dimension
-if ~isempty(SET.SmoothData_temp_type)
+if ~isempty(SET.SmoothData.temp_type)
     for iTrial = 1:SET.N
-        switch SET.SmoothData_temp_type
+        switch SET.SmoothData.temp_type
             case 'movmean'
-                STACK.(SET.trial_names_clean{iTrial}) = movmean(STACK.(SET.trial_names_clean{iTrial}), SET.SmoothData_temp, 4);
+                STACK.(SET.trial_names_clean{iTrial}) = movmean(STACK.(SET.trial_names_clean{iTrial}), SET.SmoothData.temp, 4);
             case 'movmedian'
-                STACK.(SET.trial_names_clean{iTrial}) = movmedian(STACK.(SET.trial_names_clean{iTrial}), SET.SmoothData_temp, 4);
+                STACK.(SET.trial_names_clean{iTrial}) = movmedian(STACK.(SET.trial_names_clean{iTrial}), SET.SmoothData.temp, 4);
             case 'butter'
                 % Design filter
                 Fs = median(1./diff(SET.(SET.trial_names_clean{iTrial}).relativeTime(1,:)));
-                Fc = SET.SmoothData_temp(2);
+                Fc = SET.SmoothData.temp(2);
                 Wn = Fc/(Fs/2);
                 % Safety check: butter requires 0 < Wn < 1
                 if Wn >= 1
@@ -1255,7 +1255,7 @@ if ~isempty(SET.SmoothData_temp_type)
                     warning('Invalid cutoff frequency %.3f. Using minimum positive cutoff.', Fc);
                     Wn = eps;
                 end
-                [b,a] = butter(SET.SmoothData_temp(1), Wn, 'low');
+                [b,a] = butter(SET.SmoothData.temp(1), Wn, 'low');
                 % Reshape data and filter
                 X = STACK.(SET.trial_names_clean{iTrial});
                 X = permute(X,[4 1 2 3]);
